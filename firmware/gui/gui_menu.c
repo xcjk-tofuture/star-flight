@@ -38,10 +38,10 @@ void gui_menu_render(gui_menu_t *m, gui_canvas_t *c, const char *title,
     gui_color(c, 2); /* XOR keeps text legible as the highlight moves between rows. */
     unsigned first = m->selected/MENU_VISIBLE_ROWS*MENU_VISIBLE_ROWS;
     for (unsigned row = 0; row < MENU_VISIBLE_ROWS && first+row < m->count; row++) {
-        int y = MENU_FIRST_Y+1+(int)row*MENU_ROW_PITCH;
+        int y = MENU_FIRST_Y+(int)row*MENU_ROW_PITCH;
         gui_text(c, 18, y, m->items[first+row].label, GUI_FONT_CN12);
         if (first+row == m->selected) {
-            gui_line(c, 8, y+2, 12, y+5); gui_line(c, 12, y+5, 8, y+8);
+            gui_line(c, 8, y+3, 12, y+6); gui_line(c, 12, y+6, 8, y+9);
         }
     }
     gui_color(c, 1);
