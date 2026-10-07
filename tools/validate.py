@@ -37,7 +37,7 @@ def main():
     (report/(a.preset+'.log')).write_text(log,encoding='utf-8')
     if re.search(r"can't be allocated|lma .* adjusted|undefined reference|overflowed",log):raise RuntimeError('linker diagnostic')
     car=(root/'firmware/services/chassis_service.c').exists();target='maoxiu_stm32' if car else 'xingxuan_uav'
-    firmware=root/'build'/a.preset/(target+'.elf');layout=elf_layout(firmware,0x08040000 if car else 0x08080000)
+    firmware=root/'build'/a.preset/(target+'.elf');layout=elf_layout(firmware,0x08040000)
     result={'preset':a.preset,'commit':run(['git','rev-parse','HEAD']).strip(),'dirty':bool(run(['git','status','--porcelain']).strip()),
         'flash_bytes':int(re.search(r'FLASH:\s*(\d+)',log)[1]),'ram_reserved_bytes':int(re.search(r'RAM:\s*(\d+)',log)[1]),
         'compiler_warnings':log.count('warning:'),'load_segments':layout,'hardware':'NOT RUN',

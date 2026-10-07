@@ -3,6 +3,8 @@ set(FIRMWARE_SOURCES
   firmware/app/flight_machine.c
   firmware/services/parameters/calibration_record.c
   firmware/services/parameters/param_journal.c
+  firmware/services/parameters/nv_store.c
+  firmware/platform/stm32/internal_flash_port.c
   firmware/platform/stm32/sensor_port.c
   firmware/drivers/storage/w25qxx.c
   firmware/os/failure_hooks.c
