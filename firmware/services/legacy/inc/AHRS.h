@@ -117,6 +117,14 @@ float DATA_Trans(u8 Data_1, u8 Data_2, u8 Data_3, u8 Data_4);
 void Cold_Start_ARHS(_imuData_all imu, _ahrs_data *attitude);
 
 void sensors_request_mag_calibration(void);
+void sensors_cancel_mag_calibration(void);
+enum { SENSOR_MAG_COLLECT=0, SENSOR_MAG_FIT=1, SENSOR_MAG_SAVE=2,
+       SENSOR_MAG_DONE=3, SENSOR_MAG_FAILED=4 };
+typedef struct {
+    uint16_t samples, rms_permille;
+    uint8_t coverage, reason, step;
+} sensor_mag_calibration_stats_t;
+void sensor_mag_calibration_stats_read(sensor_mag_calibration_stats_t *out);
 uint8_t sensors_mag_calibration_active(void);
 void sensor_snapshot_read(_imuData_all *out);
 uint8_t sensor_calibration_step(void);

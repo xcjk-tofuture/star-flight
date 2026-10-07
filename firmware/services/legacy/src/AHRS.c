@@ -57,7 +57,10 @@ static uav_imu_frame_t imu_frame;
 static uav_fusion_t imu_fusion;
 static uint32_t mag_sample_us, imu_read_errors;
 static uint32_t mag_read_errors, mag_not_ready, mag_fresh_samples;
-static float mag_cal_dt_s=.005f;
+static uav_mag_calibrator_t mag_calibrator;
+static uav_mag_calibration_t mag_candidate;
+static uint8_t magCalistep, mag_fit_reason;
+static uint32_t mag_started_ms, mag_fit_ms, mag_save_ticket, mag_finished_ms, mag_progress_ms;
 
 static u8 MagCalFlag = 0;
 uint8_t sensor_imu_calibrating(void) {
@@ -80,10 +83,19 @@ void sensor_processing_stats_read(sensor_processing_stats_t *out) {
     taskEXIT_CRITICAL();
 }
 static uint8_t mag_request;
-static uint8_t mag_cal_reset;
 void sensors_request_mag_calibration(void) {
     taskENTER_CRITICAL();
-    mag_request = 1;
+    mag_request |= 1u;
+    taskEXIT_CRITICAL();
+}
+void sensors_cancel_mag_calibration(void) {
+    taskENTER_CRITICAL(); mag_request |= 2u; taskEXIT_CRITICAL();
+}
+void sensor_mag_calibration_stats_read(sensor_mag_calibration_stats_t *out) {
+    taskENTER_CRITICAL();
+    *out=(sensor_mag_calibration_stats_t){mag_calibrator.count,
+        (uint16_t)(isfinite(mag_candidate.rms_fraction) && mag_candidate.rms_fraction<65 ? mag_candidate.rms_fraction*1000:65535), (uint8_t)mag_candidate.coverage,
+        mag_fit_reason, magCalistep};
     taskEXIT_CRITICAL();
 }
 uint8_t sensors_mag_calibration_active(void) { return MagCalFlag; } // 传感器校准标准位
@@ -102,10 +114,10 @@ static void copy_imu_sample(void) {
     const uav_imu_sample_t *s=&imu_pipeline.sample;
     imudata_all.acc=(acc_raw_data_t){s->acc[0],s->acc[1],s->acc[2]};
     imudata_all.gyro=(gyro_raw_data_t){s->gyro_control[0],s->gyro_control[1],s->gyro_control[2]};
-    imudata_all.mag=(mag_raw_data_t){
-        (test_mag.x-imudata_all.magoffsetbias.x)*imudata_all.magscalebias.x,
-        (test_mag.y-imudata_all.magoffsetbias.y)*imudata_all.magscalebias.y,
-        (test_mag.z-imudata_all.magoffsetbias.z)*imudata_all.magscalebias.z};
+    float raw[3]={test_mag.x,test_mag.y,test_mag.z};
+    float bias[3]={imudata_all.magoffsetbias.x,imudata_all.magoffsetbias.y,imudata_all.magoffsetbias.z},corrected[3];
+    uav_mag_correct(imudata_all.magmatrix,bias,raw,corrected);
+    imudata_all.mag=(mag_raw_data_t){corrected[0],corrected[1],corrected[2]};
 }
 void Sensor_Data_Task_Proc(void const *argument) {
     (void)argument;
@@ -131,12 +143,32 @@ void Sensor_Data_Task_Proc(void const *argument) {
     uint32_t next_fusion=platform_micros()+UAV_IMU_FUSION_PERIOD_US;
     uint32_t rejected[UAV_GYRO_REASON_COUNT]={0}, cal_timing_resets=0;
     TickType_t wake=xTaskGetTickCount();
+    uint8_t storage_paused=0;
+    uint32_t storage_seen=uav_storage_epoch();
     for (;;) {
         vTaskDelayUntil(&wake,pdMS_TO_TICKS(UAV_IMU_SAMPLE_PERIOD_MS));
         uint32_t now=platform_millis();
         if ((TickType_t)(xTaskGetTickCount()-wake)>=pdMS_TO_TICKS(UAV_IMU_SAMPLE_PERIOD_MS))
             wake=xTaskGetTickCount(); /* Drop catch-up bursts, retain real sample time. */
         sensorTimeCount++;
+        /* F407 has one Flash bank: erase/program stalls instruction fetches.
+         * Only disarmed saves are allowed. Drop the interval across the save. */
+        uint32_t storage_current=uav_storage_epoch();
+        if (storage_current!=storage_seen) {
+            storage_seen=storage_current; storage_paused=1;
+            uav_imu_pipeline_discard(&imu_pipeline);
+        }
+        if (uav_storage_busy()) {
+            if (!storage_paused) uav_imu_pipeline_discard(&imu_pipeline);
+            storage_paused=1; flight_attitude_invalidate(); continue;
+        }
+        if (storage_paused) {
+            storage_paused=0; next_fusion=platform_micros()+UAV_IMU_FUSION_PERIOD_US;
+            if (GyroCalFlag) {
+                uav_gyro_calibration_init(&startup_gyro,&uav_board_gyro_calibration);
+                warmup_start=now; cal_timing_resets++;
+            }
+        }
         if (GyroCalFlag && uav_gyro_calibration_expire(&startup_gyro,(uint32_t)(now-cal_start),UAV_GYRO_CAL_TIMEOUT_MS)) {
             GyroCalFlag=0; SensorError=1; flight_attitude_invalidate();
             uav_logf("ERROR","GYRO_CAL","FAILED timeout=%lums collected=%u/%u rate=%lu gravity=%lu variance=%lu invalid=%lu timing=%lu retry=RESET",
@@ -174,6 +206,8 @@ void Sensor_Data_Task_Proc(void const *argument) {
             if (status==1) {
                 test_mag=(mag_raw_data_t){field[0],field[1],field[2]};
                 mag_sample_us=platform_micros(); mag_fresh_samples++;
+                if (MagCalFlag && magCalistep==SENSOR_MAG_COLLECT)
+                    (void)uav_mag_calibrator_feed(&mag_calibrator,field,now);
             } else if (status<0) mag_read_errors++;
             else mag_not_ready++;
             if (AK8975Flag && mag_retries<4 && (uint32_t)(now-last_mag_retry)>=500u) {
@@ -201,13 +235,23 @@ void Sensor_Data_Task_Proc(void const *argument) {
         taskENTER_CRITICAL();
         uint8_t request=mag_request; mag_request=0;
         taskEXIT_CRITICAL();
-        if (request) {
+        if ((request & 2u) && MagCalFlag && magCalistep<SENSOR_MAG_SAVE) {
+            MagCalFlag=0; magCalistep=SENSOR_MAG_COLLECT;
+            Cold_Start_ARHS(imudata_all,&attitude_t);
+            uav_logf("INFO","MAG_CAL","cancelled; previous calibration retained");
+        }
+        if ((request & 1u) && !MagCalFlag) {
             flight_snapshot_t flight; flight_snapshot_read(&flight);
             if (flight.state==0 && !GyroCalFlag && !startup_gyro.failed && !AK8975Flag) {
-                mag_cal_reset=1; MagCalFlag=1; flight_attitude_invalidate();
+                uav_mag_calibrator_init(&mag_calibrator); memset(&mag_candidate,0,sizeof(mag_candidate));
+                mag_started_ms=mag_fit_ms=mag_progress_ms=now; mag_save_ticket=0;
+                magCalistep=SENSOR_MAG_COLLECT; mag_fit_reason=UAV_MAG_CAL_SAMPLES;
+                MagCalFlag=1; flight_attitude_invalidate();
+                uav_logf("INFO","MAG_CAL","ellipsoid start min_samples=200 capacity=512 timeout=180s rotate=ALL_AXES raw_fresh_only=1");
             } else uav_logf("WARN","SENSOR","magnetic calibration rejected: state=%u gyro_cal=%u failed=%u mag_rc=%u",
                            (unsigned)flight.state,(unsigned)GyroCalFlag,(unsigned)startup_gyro.failed,(unsigned)AK8975Flag);
         }
+        if (MagCalFlag) Mag_Zero_Offset_Calibration(&imudata_all);
         if (sample_good && (int32_t)(sample_us-next_fusion)>=0) {
             next_fusion+=UAV_IMU_FUSION_PERIOD_US;
             if ((int32_t)(sample_us-next_fusion)>=0) next_fusion=sample_us+UAV_IMU_FUSION_PERIOD_US;
@@ -234,11 +278,6 @@ void Sensor_Data_Task_Proc(void const *argument) {
                     else flight_attitude_invalidate();
                 } else if (MagCalFlag) {
                     flight_attitude_invalidate();
-                    mag_cal_dt_s=imu_frame.dt_s;
-                    imudata_all.mag=test_mag; /* Existing calibration measures uncorrected extrema. */
-                    Mag_Zero_Offset_Calibration(&imudata_all);
-                    if (!MagCalFlag) Cold_Start_ARHS(imudata_all,&attitude_t);
-                    copy_imu_sample();
                 }
                 publish_sensor_values();
             }
@@ -360,75 +399,54 @@ void Sensors_Init() // 传感器初始化
         uav_logf("WARN", "AHRS", "magnetometer unavailable; six-axis attitude; yaw has no magnetic reference and may drift");
 }
 
-static u8 magCalistep = 0;
-uint8_t sensor_calibration_step(void) {
-    taskENTER_CRITICAL();
-    uint8_t step = magCalistep;
-    taskEXIT_CRITICAL();
-    return step;
+uint8_t sensor_calibration_step(void) { return magCalistep; }
+static void mag_calibration_fail(uint8_t reason) {
+    mag_fit_reason=reason; magCalistep=SENSOR_MAG_FAILED; MagCalFlag=0;
+    Cold_Start_ARHS(imudata_all,&attitude_t);
+    uav_logf("ERROR","MAG_CAL","FAILED reason=%u samples=%u coverage=0x%02lx previous_calibration_retained=1",
+             (unsigned)reason,(unsigned)mag_calibrator.count,(unsigned long)mag_candidate.coverage);
 }
 void Mag_Zero_Offset_Calibration(_imuData_all *imu) {
-    static float gyroRoll, gyroPitch, gyroYaw;
-    static float magXMax, magYMax, magZMax;
-    static float magXMin, magYMin, magZMin;
-    static uint32_t last_save_attempt, saved_ms;
-    if (mag_cal_reset) {
-        mag_cal_reset=0; magCalistep=0;
-        gyroRoll=gyroPitch=gyroYaw=0;
-        magXMax=magXMin=imu->mag.x; magYMax=magYMin=imu->mag.y; magZMax=magZMin=imu->mag.z;
-        last_save_attempt=platform_millis()-1000u;
-    }
-    switch (magCalistep) {
-    case 0:
-        gyroRoll += imu->gyro.roll * mag_cal_dt_s;
-        magZMax = magZMax > imu->mag.z ? magZMax : imu->mag.z;
-        magZMin = magZMin < imu->mag.z ? magZMin : imu->mag.z;
-
-        if (gyroRoll >= PI * 2.2f || gyroRoll <= PI * -2.2f)
-            magCalistep = 1;
-        break;
-    case 1:
-        imu->magoffsetbias.z = (magZMax + magZMin) / 2;
-        gyroPitch += imu->gyro.pitch * mag_cal_dt_s;
-        magZMax = magZMax > imu->mag.z ? magZMax : imu->mag.z;
-        magZMin = magZMin < imu->mag.z ? magZMin : imu->mag.z;
-
-        if (gyroPitch >= PI * 2.2f || gyroPitch <= PI * -2.2f)
-            magCalistep = 2;
-        break;
-    case 2:
-        imu->magoffsetbias.z = (magZMax + magZMin) / 2;
-        gyroYaw += imu->gyro.yaw * mag_cal_dt_s;
-        magXMax = magXMax > imu->mag.x ? magXMax : imu->mag.x;
-        magXMin = magXMin < imu->mag.x ? magXMin : imu->mag.x;
-        magYMax = magYMax > imu->mag.y ? magYMax : imu->mag.y;
-        magYMin = magYMin < imu->mag.y ? magYMin : imu->mag.y;
-        if ((gyroYaw) >= PI * 2.2f || (gyroYaw) <= PI * -2.2f)
-            magCalistep = 3;
-        break;
-    case 3:
-        if ((uint32_t)(platform_millis()-last_save_attempt)<1000u) break;
-        last_save_attempt=platform_millis();
-        imu->magoffsetbias.x = (magXMax + magXMin) / 2;
-        imu->magoffsetbias.y = (magYMax + magYMin) / 2;
-        gyroRoll = 0;
-        gyroPitch = 0;
-        gyroYaw = 0;
-        if (UAV_Write_Param_IMU(*imu)!=0) {
-            uav_logf("WARN","MAG_CAL","save rejected; retry pending");
-            break;
+    uint32_t now=platform_millis();
+    if (magCalistep==SENSOR_MAG_COLLECT) {
+        if ((uint32_t)(now-mag_started_ms)>=UAV_MAG_CAL_TIMEOUT_MS) {
+            mag_calibration_fail(UAV_MAG_CAL_TIMEOUT); return;
         }
-        saved_ms=platform_millis();
-        magCalistep = 4;
-        break;
-    case 4:
-        if (uav_storage_busy() || (uint32_t)(platform_millis()-saved_ms)<1000u) break;
-        magCalistep = 0;
-        MagCalFlag = 0;
-        break;
+        if (mag_calibrator.count>=UAV_MAG_CAL_MIN_SAMPLES && (uint32_t)(now-mag_fit_ms)>=5000u) {
+            mag_fit_ms=now; magCalistep=SENSOR_MAG_FIT;
+            mag_fit_reason=(uint8_t)uav_mag_calibrator_fit(&mag_calibrator,&mag_candidate);
+            if (mag_fit_reason==UAV_MAG_CAL_OK) {
+                if (UAV_Write_Param_Mag(&mag_candidate,&mag_save_ticket)!=0) {
+                    mag_calibration_fail(UAV_MAG_CAL_STORAGE); return;
+                }
+                magCalistep=SENSOR_MAG_SAVE;
+                uav_logf("INFO","MAG_CAL","fit accepted samples=%u coverage=0x%02lx rms_permille=%lu field_milli_uT=%lu ticket=%lu awaiting_readback=1",
+                         (unsigned)mag_calibrator.count,(unsigned long)mag_candidate.coverage,
+                         (unsigned long)(mag_candidate.rms_fraction*1000),(unsigned long)(mag_candidate.field_ut*1000),
+                         (unsigned long)mag_save_ticket);
+            } else magCalistep=SENSOR_MAG_COLLECT;
+        }
+        if ((uint32_t)(now-mag_progress_ms)>=2000u) {
+            mag_progress_ms=now;
+            uav_logf("INFO","MAG_CAL","collect elapsed_ms=%lu samples=%u/200 coverage=0x%02lx reason=%u rotate_all_axes=1",
+                     (unsigned long)(now-mag_started_ms),(unsigned)mag_calibrator.count,
+                     (unsigned long)mag_candidate.coverage,(unsigned)mag_fit_reason);
+        }
+    } else if (magCalistep==SENSOR_MAG_SAVE) {
+        int result=uav_storage_result(mag_save_ticket);
+        if (!result) return;
+        if (result<0) { mag_calibration_fail(UAV_MAG_CAL_STORAGE); return; }
+        imu->magoffsetbias=(Vector3f_t){mag_candidate.bias[0],mag_candidate.bias[1],mag_candidate.bias[2]};
+        memcpy(imu->magmatrix,mag_candidate.matrix,sizeof(imu->magmatrix));
+        imu->magscalebias=(Vector3f_t){mag_candidate.matrix[0],mag_candidate.matrix[4],mag_candidate.matrix[8]};
+        copy_imu_sample(); Cold_Start_ARHS(*imu,&attitude_t);
+        mag_finished_ms=now; magCalistep=SENSOR_MAG_DONE;
+        uav_logf("INFO","MAG_CAL","COMPLETE saved=1 readback=1 full_matrix=1 fusion_input=CORRECTED bias_milli_uT=%ld,%ld,%ld",
+                 (long)(mag_candidate.bias[0]*1000),(long)(mag_candidate.bias[1]*1000),(long)(mag_candidate.bias[2]*1000));
+    } else if (magCalistep==SENSOR_MAG_DONE && (uint32_t)(now-mag_finished_ms)>=1000u) {
+        MagCalFlag=0;
     }
 }
-
 void IMU_Temperature_Control_Init() // IMU恒温控制初始化
 {
     uav_device_heater_init();
