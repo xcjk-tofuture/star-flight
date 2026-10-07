@@ -2,6 +2,7 @@
 #include "AHRS.h"
 #include "attitude.h"
 #include "flight_snapshot.h"
+#include "log_service.h"
 
 #include "lowPassFilter.h"
 #include "matrix6.h"
@@ -96,10 +97,11 @@ void Sensor_Data_Task_Proc(void const *argument) {
         uint8_t request = mag_request;
         mag_request = 0;
         taskEXIT_CRITICAL();
-        if (request) {
+        if (request && !AK8975Flag) {
             MagCalFlag = 1;
             flight_attitude_invalidate();
-        }
+        } else if (request)
+            uav_logf("WARN", "SENSOR", "magnetic calibration rejected: magnetometer initialization failed");
 #if !EXTERN_IMU
 
         if (sensorTimeCount % 2 == 0) {
@@ -118,7 +120,9 @@ void Sensor_Data_Task_Proc(void const *argument) {
             taskENTER_CRITICAL();
             published_sensors = imudata_all;
             taskEXIT_CRITICAL();
-            if (!(AccCalFlag || GyroCalFlag || MagCalFlag || SensorError)) {
+            /* BMI088 is required for attitude. Optional sensor failures retain
+             * their diagnostic flags without blocking six-axis operation. */
+            if (!(AccCalFlag || GyroCalFlag || MagCalFlag || Bmi088Init_Flag)) {
                 // AHRS_Kalman_Update(imudata_all, &attitude_t);
                 if (AHRS_Mahony_Update(imudata_all, &attitude_t) == 0)
                     flight_attitude_publish(attitude_t.roll, attitude_t.pitch, attitude_t.yaw,
@@ -141,6 +145,7 @@ void Sensor_Data_Task_Proc(void const *argument) {
         if (sensorTimeCount % UPDATE_TIME_MAG == 0) {
 #if !EXTERN_IMU
             ReadMagData(&test_mag);
+
 #endif
         }
     }
@@ -212,6 +217,12 @@ void Sensors_Init() // 传感器初始化
     }
 
     IMU_Temperature_Control_Init();
+    uav_logf(Bmi088Init_Flag ? "ERROR" : (AK8975Flag || SPL06Flag) ? "WARN" : "INFO", "SENSOR",
+             "init_complete BMI088_rc=%u MAG_rc=%u BARO_rc=%u attitude_mode=%s",
+             (unsigned)Bmi088Init_Flag, (unsigned)AK8975Flag, (unsigned)SPL06Flag,
+             Bmi088Init_Flag ? "BLOCKED" : AK8975Flag ? "6AXIS" : "9AXIS");
+    if (!Bmi088Init_Flag && AK8975Flag)
+        uav_logf("WARN", "AHRS", "magnetometer unavailable; six-axis attitude; yaw has no magnetic reference and may drift");
 }
 
 void Sensor_Calibration(_imuData_all *imu) // 传感器校准
@@ -494,7 +505,9 @@ int AHRS_Mahony_Update(_imuData_all imu, _ahrs_data *attitude) {
     static uint8_t initialized;
     const float acc[3] = {imu.acc.x, imu.acc.y, imu.acc.z};
     const float gyro[3] = {imu.gyro.roll, imu.gyro.pitch, imu.gyro.yaw};
-    const float mag[3] = {imu.mag.x, imu.mag.y, imu.mag.z};
+    const float mag[3] = {AK8975Flag ? 0.0f : imu.mag.x,
+                         AK8975Flag ? 0.0f : imu.mag.y,
+                         AK8975Flag ? 0.0f : imu.mag.z};
     if (!initialized) {
         uav_attitude_init(&filter);
         initialized = 1;
