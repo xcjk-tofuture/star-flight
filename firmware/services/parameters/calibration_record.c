@@ -1,9 +1,14 @@
 #include "calibration_record.h"
 #include "star_protocol.h"
+#include "mag_record.h"
 #include <math.h>
 int calibration_record_valid(unsigned kind, const uint8_t *b, size_t n) {
     if (!b)
         return 0;
+    if (kind == UAV_PARAM_MAG) {
+        uav_mag_calibration_t c;
+        return n == UAV_PARAM_MAG_BYTES && uav_mag_record_decode(b, &c);
+    }
     if (kind == 1) {
         if (n != 72)
             return 0;

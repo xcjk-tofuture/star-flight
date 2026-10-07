@@ -1,9 +1,11 @@
 set(FIRMWARE_SOURCES
   firmware/algorithms/calibration/gyro_calibration.c
+  firmware/algorithms/calibration/mag_calibration.c
   firmware/app/flight_machine.c
   firmware/services/parameters/calibration_record.c
   firmware/services/parameters/param_journal.c
   firmware/services/parameters/nv_store.c
+  firmware/services/parameters/mag_record.c
   firmware/platform/stm32/internal_flash_port.c
   firmware/platform/stm32/sensor_port.c
   firmware/drivers/storage/w25qxx.c

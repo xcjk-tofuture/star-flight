@@ -7,7 +7,7 @@ if (fw/'services/chassis_service.c').exists():
     cases.append(('parameters',[fw/'services/parameters/chassis_parameters.c',fw/'services/protocol/star_protocol.c',fw/'services/protocol/star_dispatch.c',root/'tests/parameter_tests.c']))
 else:
     cases.append(('gyro_calibration',[fw/'algorithms/calibration/gyro_calibration.c',root/'tests/gyro_calibration_tests.c']))
-    cases.append(('flight',[fw/'app/flight_machine.c',fw/'services/parameters/calibration_record.c',fw/'services/protocol/star_protocol.c',root/'tests/flight_tests.c']))
+    cases.append(('flight',[fw/'app/flight_machine.c',fw/'services/parameters/calibration_record.c',fw/'services/parameters/mag_record.c',fw/'algorithms/calibration/mag_calibration.c',fw/'services/protocol/star_protocol.c',root/'tests/flight_tests.c']))
     cases.append(('gui_navigation',[fw/'gui/gui_dashboard.c',fw/'gui/gui_menu.c',root/'tests/gui_navigation_tests.c']))
     cases.append(('imu_processing',[fw/'algorithms/filter/biquad.c',fw/'algorithms/attitude/fusion.c',fw/'algorithms/calibration/gyro_calibration.c',fw/'services/imu_pipeline.c',fw/'platform/stm32/imu_sample_decode.c',root/'tests/imu_processing_tests.c']))
 includes=[fw/'algorithms/calibration',fw/'services/parameters',fw/'services/protocol',fw/'services',fw/'algorithms/chassis',fw/'boards/stm32',fw/'app']
