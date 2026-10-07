@@ -26,7 +26,7 @@ typedef struct {
     int16_t flow_height_mm;
     uint16_t remote_raw[8], remote_pwm[8], remote_min[8], remote_max[8];
     uint8_t attitude_valid, state, rc_connected, rc_raw_connected, remote_calibrating;
-    uint8_t imu_calibrating, mag_calibrating, mag_calibration_step;
+    uint8_t imu_calibrating, imu_cal_failed, fusion_mag_used, mag_calibrating, mag_calibration_step;
     uint8_t imu_ok, mag_ok, baro_ok, flash_ok, flow_valid, flow_quality;
     gui_present_stats_t display_stats;
     uint16_t render_ms;

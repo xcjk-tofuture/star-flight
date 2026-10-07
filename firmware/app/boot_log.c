@@ -170,10 +170,10 @@ static void log_sensor_sample(void) {
 void app_boot_log_health(void) {
     flight_snapshot_t snapshot;
     flight_snapshot_read(&snapshot);
-    uav_logf(SensorError ? "WARN" : "INFO", "SENSOR", "init_flags BMI088=%u AK8975=%u SPL06=%u error=%u calibrating=%u attitude_valid=%u mode=%s",
+    uav_logf(SensorError ? "WARN" : "INFO", "SENSOR", "init_flags BMI088=%u AK8975=%u SPL06=%u error=%u calibrating=%u gyro_cal_failed=%u attitude_valid=%u mode=%s",
              (unsigned)Bmi088Init_Flag, (unsigned)AK8975Flag, (unsigned)SPL06Flag,
-             (unsigned)SensorError, (unsigned)sensor_imu_calibrating(), (unsigned)snapshot.valid,
-             Bmi088Init_Flag ? "BLOCKED" : AK8975Flag ? "6AXIS" : "9AXIS");
+             (unsigned)SensorError, (unsigned)sensor_imu_calibrating(), (unsigned)sensor_imu_calibration_failed(), (unsigned)snapshot.valid,
+             Bmi088Init_Flag ? "BLOCKED" : sensor_imu_calibration_failed() ? "CAL_FAILED" : AK8975Flag ? "6AXIS" : "MAG_READY");
     uint8_t ids[4], seen;
     uav_sensor_id_snapshot(ids, &seen);
     uav_logf("INFO", "SENSOR_ID", "seen_mask=0x%x ACC=0x%02x GYRO=0x%02x MAG=0x%02x BARO=0x%02x",

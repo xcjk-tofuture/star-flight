@@ -16,7 +16,9 @@ void RGB_Task_Proc(void const *argument) // RGB进程主程序
     ucLed = 0x00;
     for (;;) {
 
-        if (sensor_imu_calibrating())
+        if (sensor_imu_calibration_failed())
+            uav_device_led_write(4); /* Latched red; RESET starts a fresh attempt. */
+        else if (sensor_imu_calibrating())
             RGB_Calibration(ucLed);
         else {
             flight_snapshot_t flight;

@@ -36,6 +36,7 @@ int main(int argc, char **argv) {
     gui_canvas_init(&canvas); gui_dashboard_init(&dashboard);
     model.attitude_valid = model.imu_ok = model.mag_ok = model.baro_ok = model.rc_connected = model.rc_raw_connected = 1;
     model.flow_valid = model.flash_ok = 1; model.flow_quality = 210; model.flow_height_mm = 1250;
+    model.fusion_mag_used = 1;
     model.heap_free = 2672; model.heap_min = 2440; model.render_ms = 3; model.display_stats.last_bytes = 280;
     for (unsigned i = 0; i < 8; i++) {
         model.remote_pwm[i] = (uint16_t)(1100+i*110); model.remote_raw[i] = (uint16_t)(300+i*150);
@@ -85,6 +86,10 @@ int main(int argc, char **argv) {
         if (save_frame(argv[1], scenes[i].name)) return 1;
     }
     model.remote_calibrating = model.mag_calibrating = 0;
+    model.imu_cal_failed=1; model.attitude_valid=0;
+    gui_dashboard_set_page(&dashboard,2); gui_dashboard_render(&dashboard,&canvas,&model);
+    if (save_frame(argv[1],"attitude-cal-failed")) return 1;
+    model.imu_cal_failed=0; model.attitude_valid=1;
     model.rc_connected = 0; model.state = 3; model.flash_ok = 0;
     gui_dashboard_set_page(&dashboard, 1); gui_dashboard_render(&dashboard, &canvas, &model);
     if (save_frame(argv[1], "overview-no-rc")) return 1;

@@ -29,6 +29,7 @@ static void open_calibration(gui_dashboard_t *d, const gui_model_t *m) {
     gui_menu_open(&d->menu, m->remote_calibrating ? calibration_save : calibration_start, 3, 0);
 }
 static const char *status(const gui_model_t *m) {
+    if (m->imu_cal_failed) return "校准失败";
     if (m->imu_calibrating) return "校准中";
     if (m->mag_calibrating) return "磁校中";
     if (m->remote_calibrating) return "遥控校准";
@@ -120,7 +121,7 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
         d->message = m->state != 0 ? MESSAGE_STATE : !m->flash_ok ? MESSAGE_FLASH
                      : action == MENU_REMOTE_START && !m->rc_raw_connected ? MESSAGE_NO_RC
                      : action == MENU_MAG_START && !m->mag_ok ? MESSAGE_MAG
-                     : action == MENU_MAG_START && (!m->attitude_valid || m->imu_calibrating) ? MESSAGE_IMU : MESSAGE_NONE;
+                     : action == MENU_MAG_START && (!m->attitude_valid || m->imu_calibrating || m->imu_cal_failed) ? MESSAGE_IMU : MESSAGE_NONE;
         if (d->message) { d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE; }
         d->confirm_command = action == MENU_REMOTE_START ? GUI_COMMAND_REMOTE_START
                              : action == MENU_REMOTE_SAVE ? GUI_COMMAND_REMOTE_SAVE : GUI_COMMAND_MAG_START;
@@ -134,7 +135,7 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
         if (command == GUI_COMMAND_REMOTE_START && !m->rc_raw_connected) {
             d->message = MESSAGE_NO_RC; d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE;
         }
-        if (command == GUI_COMMAND_MAG_START && (!m->mag_ok || !m->attitude_valid || m->imu_calibrating)) {
+        if (command == GUI_COMMAND_MAG_START && (!m->mag_ok || !m->attitude_valid || m->imu_calibrating || m->imu_cal_failed)) {
             d->message = MESSAGE_IMU; d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE;
         }
         gui_dashboard_set_page(d, command == GUI_COMMAND_REMOTE_SAVE ? 1
@@ -173,7 +174,7 @@ static void overview(gui_canvas_t *c, const gui_model_t *m) {
     number(c, 12, 40, m->attitude[2]*DEG_PER_RAD, 1, 1, m->attitude_valid, GUI_FONT_BODY);
     number(c, 88, 40, m->temperature_c, 1, 0, m->imu_ok, GUI_FONT_BODY);
     gui_text(c, 79, 40, "T", GUI_FONT_TINY);
-    gui_text(c, 2, 50, m->mag_ok ? "9AXIS" : "6AXIS", GUI_FONT_TINY);
+    gui_text(c, 2, 50, m->fusion_mag_used ? "9AXIS" : "6AXIS", GUI_FONT_TINY);
     gui_text(c, 38, 50, m->baro_ok ? "BARO OK" : "BARO ERR", GUI_FONT_TINY);
     gui_text(c, 84, 50, m->flash_ok ? "FLASH OK" : "FLASH ERR", GUI_FONT_TINY);
 }
@@ -182,7 +183,7 @@ static void attitude(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
     if (m->attitude_valid) {
         if (!view) gui_drone_3d(c, m->attitude[0], m->attitude[1], m->attitude[2], 40, 34, 22);
         else gui_horizon(c, m->attitude[0], m->attitude[1], 2, 16, 78, 38);
-    } else gui_text(c, 12, 28, m->imu_calibrating ? "校准中" : "等待姿态", GUI_FONT_CN12);
+    } else gui_text(c, 12, 28, m->imu_cal_failed ? "校准失败" : m->imu_calibrating ? "校准中" : "等待姿态", GUI_FONT_CN12);
     u8g2_SetMaxClipWindow(&c->graphics);
     gui_line(c, 82, 16, 82, 54);
     static const char *const labels[] = {"R", "P", "Y"};
@@ -310,7 +311,8 @@ static void health_row(gui_canvas_t *c, int y, const char *label, int okay, cons
 }
 static void health(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
     if (!view) {
-        health_row(c, 16, "IMU / MAG", m->imu_ok && m->mag_ok, m->imu_ok ? m->mag_ok ? "9AXIS OK" : "6AXIS" : "FAILED");
+        health_row(c, 16, "IMU / MAG", m->imu_ok && m->mag_ok && !m->imu_cal_failed,
+                   m->imu_cal_failed ? "CAL FAIL" : m->imu_ok ? m->fusion_mag_used ? "9AXIS OK" : "6AXIS" : "FAILED");
         health_row(c, 24, "BAROMETER", m->baro_ok, m->baro_ok ? "OK" : "FAILED");
         health_row(c, 34, "RC / FLOW", m->rc_connected, m->rc_connected ? m->flow_valid ? "BOTH OK" : "NO FLOW" : "NO RC");
         health_row(c, 44, "FLASH BOOT", m->flash_ok, m->flash_ok ? "OK" : "ID ERROR");
@@ -357,11 +359,11 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
         const char *reason = d->message == MESSAGE_STATE ? "等待锁定"
                              : d->message == MESSAGE_FLASH ? "闪存异常"
                              : d->message == MESSAGE_NO_RC ? "遥控未连接"
-                             : d->message == MESSAGE_MAG ? "磁场未就绪" : "等待校准";
+                             : d->message == MESSAGE_MAG ? "磁场未就绪" : m->imu_cal_failed ? "校准失败" : "等待校准";
         const char *detail = d->message == MESSAGE_STATE ? "请先锁定飞控"
                              : d->message == MESSAGE_FLASH ? "校准数据无法保存"
                              : d->message == MESSAGE_NO_RC ? "请先连接接收机"
-                             : d->message == MESSAGE_MAG ? "请等待器件初始化" : "请静置等待校准";
+                             : d->message == MESSAGE_MAG ? "请等待器件初始化" : m->imu_cal_failed ? "请先静置设备" : "请静置等待校准";
         gui_text(c, (GUI_WIDTH-gui_text_width(c, reason, GUI_FONT_CN16))/2, 20, reason, GUI_FONT_CN16);
         gui_text(c, (GUI_WIDTH-gui_text_width(c, detail, GUI_FONT_CN12))/2, 41, detail, GUI_FONT_CN12);
         gui_text(c, 1, 58, "1/2 BACK  HOLD1 MENU", GUI_FONT_TINY);

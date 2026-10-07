@@ -106,6 +106,10 @@ static void read_model(void) {
     model.rc_raw_connected = raw.Connect_State;
     model.remote_calibrating = sbus_calibration_active();
     model.imu_calibrating = sensor_imu_calibrating(); model.mag_calibrating = sensors_mag_calibration_active();
+    model.imu_cal_failed=sensor_imu_calibration_failed();
+    sensor_processing_stats_t processing;
+    sensor_processing_stats_read(&processing);
+    model.fusion_mag_used=processing.mag_used;
     model.mag_calibration_step = sensor_calibration_step();
     model.imu_ok = !Bmi088Init_Flag; model.mag_ok = !AK8975Flag; model.baro_ok = !SPL06Flag;
     model.flash_ok = (uint8_t)app_boot_flash_ready();

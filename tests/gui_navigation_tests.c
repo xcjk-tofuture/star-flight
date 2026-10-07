@@ -43,6 +43,12 @@ int main(void) {
     open_calibration();
     gui_dashboard_input(&dashboard, GUI_INPUT_ENTER, &model);
     assert(dashboard.screen == GUI_SCREEN_MESSAGE);
+    model.flash_ok=1; model.imu_cal_failed=1;
+    open_calibration();
+    gui_dashboard_input(&dashboard,GUI_INPUT_NEXT,&model);
+    gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
+    assert(dashboard.screen==GUI_SCREEN_MESSAGE);
+    model.imu_cal_failed=0;
     /* Reading pages stays available in flight. */
     model.state = 2;
     gui_dashboard_init(&dashboard);
