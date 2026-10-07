@@ -11,6 +11,11 @@ $script:LogBytes = New-Object 'System.Collections.Generic.List[byte]'
 $script:TelemetryCount = 0
 $script:LogFrameCount = 0
 $script:CrcErrors = 0
+$script:LastLogSequence = $null
+$script:ExpectedLogSequence = $null
+$script:DiscardLogTail = $false
+$script:LogSequenceGaps = 0
+$script:LogDuplicates = 0
 $script:Clock = [System.Diagnostics.Stopwatch]::StartNew()
 $script:LastTelemetryMs = -1000
 
@@ -58,8 +63,35 @@ function Handle-Frame([byte[]]$Frame) {
     $sequence = Read-U16 $Frame 4
     if ($command -eq 0x20f0 -and $Frame[3] -eq 2) {
         $script:LogFrameCount++
+        # Retried frames keep their sequence. Ignore a duplicate before joining text.
+        if ($sequence -ne 0 -and $null -ne $script:LastLogSequence -and
+            $sequence -eq $script:LastLogSequence) {
+            $script:LogDuplicates++
+            return
+        }
+        if ($null -ne $script:ExpectedLogSequence -and $sequence -ne $script:ExpectedLogSequence) {
+            $script:LogBytes.Clear()
+            if ($sequence -eq 0) {
+                # A new boot begins at sequence zero and carries a fresh text prefix.
+                $script:DiscardLogTail = $false
+            } else {
+                $script:LogSequenceGaps++
+                $script:DiscardLogTail = $true
+                $stamp = [DateTimeOffset]::Now.ToString('yyyy-MM-dd HH:mm:ss.fff zzz')
+                Write-Host ("$stamp [WARN] LOG sequence gap: expected=$($script:ExpectedLogSequence) received=$sequence; incomplete line discarded") -ForegroundColor Red
+            }
+        }
+        $script:LastLogSequence = $sequence
+        $script:ExpectedLogSequence = ($sequence + 1) -band 0xffff
         if ($length) {
             [byte[]]$payload = $Frame[10..(9 + $length)]
+            if ($script:DiscardLogTail) {
+                $newline = [Array]::IndexOf($payload, [byte]10)
+                if ($newline -lt 0) { return }
+                $script:DiscardLogTail = $false
+                if ($newline + 1 -ge $payload.Length) { return }
+                $payload = [byte[]]$payload[($newline + 1)..($payload.Length - 1)]
+            }
             $script:LogBytes.AddRange($payload)
             Show-LogLines
         }
@@ -143,6 +175,7 @@ try {
         $stamp = [DateTimeOffset]::Now.ToString('yyyy-MM-dd HH:mm:ss.fff zzz')
         Write-Host ($stamp + ' [LOG partial] ' + [System.Text.Encoding]::UTF8.GetString($script:LogBytes.ToArray()))
     }
-    Write-Host ('Frames: telemetry={0} log_frames={1} crc_errors={2}' -f
-        $script:TelemetryCount, $script:LogFrameCount, $script:CrcErrors)
+    Write-Host ('Frames: telemetry={0} log_frames={1} crc_errors={2} log_gaps={3} log_duplicates={4}' -f
+        $script:TelemetryCount, $script:LogFrameCount, $script:CrcErrors,
+        $script:LogSequenceGaps, $script:LogDuplicates)
 }

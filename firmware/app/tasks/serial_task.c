@@ -63,13 +63,11 @@ void PC_Data_Rx_Proc(uint16_t size) {
         receive_lost = 1;
     portYIELD_FROM_ISR(woken);
 }
-static void send_frame(const star_frame_t *frame) {
+static int send_frame(const star_frame_t *frame) {
     uint8_t bytes[STAR_FRAME_MAX];
     size_t length = star_encode(frame, bytes, sizeof(bytes));
-    /* Only this task owns USART1 TX. Blocking transfer bounds buffer lifetime. */
-    if (length && serial_port_send(bytes, length) != 0) {
-        /* Dropped telemetry/response is recoverable; host retries with a new sequence. */
-    }
+    /* Only this task owns USART1 TX; the port copies the frame for DMA. */
+    return length ? serial_port_send(bytes, length) : -1;
 }
 static void on_frame(void *context, const star_frame_t *request) {
     star_frame_t response;
@@ -83,6 +81,8 @@ void PC_Task_Proc(void const *argument) {
     rx_packet_t packet;
     star_frame_t request = {0}, event;
     uint32_t last_telemetry = platform_millis(), now;
+    uint8_t pending_log[UAV_LOG_FRAME_BYTES];
+    size_t pending_log_length = 0;
     (void)argument;
     if (!receive_queue) {
         vTaskDelete(NULL);
@@ -112,13 +112,18 @@ void PC_Task_Proc(void const *argument) {
         }
         /* One bounded log chunk per loop; responses and telemetry go first.
          * This task owns all USART1 TX, so frame bytes never interleave. */
-        size_t log_length = uav_log_receive(event.payload, UAV_LOG_FRAME_BYTES, 0);
-        if (log_length) {
+        if (!pending_log_length)
+            pending_log_length = uav_log_receive(pending_log, sizeof(pending_log), 0);
+        if (pending_log_length) {
             event.flags = STAR_EVENT;
-            event.sequence = log_sequence++;
+            event.sequence = log_sequence;
             event.command = UAV_EVENT_LOG;
-            event.length = (uint16_t)log_length;
-            send_frame(&event);
+            event.length = (uint16_t)pending_log_length;
+            memcpy(event.payload, pending_log, pending_log_length);
+            if (send_frame(&event) == 0) {
+                log_sequence++;
+                pending_log_length = 0;
+            }
         }
     }
 }
