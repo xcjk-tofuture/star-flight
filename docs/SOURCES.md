@@ -14,3 +14,5 @@
 - ARM GNU 13.3.Rel1：Windows 包 SHA256 `e46fda043c0ce83582bc8db4b3ef85f77f4beb7333344c2f4193c17e1167a095`；CI Linux 包 SHA256 `95c011cee430e64dd6087c75c800f04b9c49832cc1000127a92a97f9c8d83af4`。
 - xPack OpenOCD 0.12.0-7：Windows 包 SHA256 `6bfd3c97135aafef8affc9af1acf34fd0e2b9ca26044506f6abd7f95b7630052`。
 - CI 依赖与固定提交见 `.github/workflows/firmware.yml`。
+- IMU处理新增模块为本项目C实现；设计参考PX4固定提交 `1af262c9257c120615019c0da436e725476b63a9`
+  的二阶滤波、轻量四元数融合和校准，以及Bosch官方BMI088配置定义。链接和适配范围见 [IMU_PIPELINE.md](IMU_PIPELINE.md)。

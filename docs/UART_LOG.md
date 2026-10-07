@@ -92,6 +92,11 @@ powershell -ExecutionPolicy Bypass -File .\tools\uart-monitor.ps1 -Port COM7
 四次均失败时保留六轴模式。初次 ID 为 0x00 并不证明后续磁力数据不存在，
 应结合 `SENSOR_DATA` 和重查结果判断。
 
+当前采集/滤波/融合链路见 [IMU_PIPELINE.md](IMU_PIPELINE.md)。`GYRO_CAL` 每秒显示
+滤波后校准进度和重采原因，30秒超时输出 `FAILED ... retry=RESET`。
+`IMU_PIPE` 报告实际Hz、间隔范围、读错误、重置及重力/磁场参与状态；
+`MAG_READY` 表示初始化ID正常，是否实际参与融合以 `mag_used` 为准。
+
 `SENSOR_DATA` 为当前发布的滤波后采样值，`scale=1000` 表示每项数值除以 1000 得到浮点值。
 `bad_fields` 的 bit0..8 按 acc xyz、gyro roll/pitch/yaw、mag xyz 排列；非有限或超出日志转换范围的字段用 0 占位并置位。
 
