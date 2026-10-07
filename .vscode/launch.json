@@ -2,6 +2,29 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "VLLINK：烧录并停在 main",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/debug/xingxuan_uav.elf",
+      "serverpath": "C:/Users/xcjk/Documents/Codex/2026-10-07/https-github-com-xcjk-tofuture-star/work/toolchains/xpack-openocd-0.12.0-7/bin/openocd.exe",
+      "gdbPath": "C:/Users/xcjk/Documents/Codex/2026-10-07/https-github-com-xcjk-tofuture-star/work/toolchains/arm-gnu-toolchain-13.3.rel1-mingw-w64-i686-arm-none-eabi/bin/arm-none-eabi-gdb.exe",
+      "armToolchainPath": "C:/Users/xcjk/Documents/Codex/2026-10-07/https-github-com-xcjk-tofuture-star/work/toolchains/arm-gnu-toolchain-13.3.rel1-mingw-w64-i686-arm-none-eabi/bin",
+      "searchDir": [
+        "C:/Users/xcjk/Documents/Codex/2026-10-07/https-github-com-xcjk-tofuture-star/work/toolchains/xpack-openocd-0.12.0-7/openocd/scripts"
+      ],
+      "configFiles": [
+        "${workspaceFolder}/openocd/board-cmsis-dap.cfg"
+      ],
+      "runToEntryPoint": "main",
+      "postLaunchCommands": [
+        "break Error_Handler",
+        "break HardFault_Handler",
+        "break app_fatal"
+      ]
+    },
+    {
       "name": "OpenOCD ST-Link",
       "type": "cortex-debug",
       "request": "launch",
