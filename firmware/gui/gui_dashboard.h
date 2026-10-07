@@ -13,7 +13,7 @@ enum {
 typedef enum { GUI_INPUT_NEXT = 1, GUI_INPUT_ENTER, GUI_INPUT_BACK, GUI_INPUT_CALIBRATION,
                GUI_INPUT_NEXT_PAGE, GUI_INPUT_NEXT_VIEW } gui_input_t;
 typedef enum { GUI_COMMAND_NONE, GUI_COMMAND_REMOTE_START, GUI_COMMAND_REMOTE_SAVE,
-               GUI_COMMAND_MAG_START } gui_command_t;
+               GUI_COMMAND_MAG_START, GUI_COMMAND_MAG_CANCEL } gui_command_t;
 typedef enum { GUI_SCREEN_ROOT, GUI_SCREEN_PAGE, GUI_SCREEN_CALIBRATION,
                GUI_SCREEN_HELP, GUI_SCREEN_CONFIRM, GUI_SCREEN_MESSAGE } gui_screen_t;
 /* Presentation-only snapshot. Units: rad, rad/s, m/s2, uT, C, Pa, flow mm/s/mm.
@@ -28,6 +28,8 @@ typedef struct {
     uint8_t attitude_valid, state, rc_connected, rc_raw_connected, remote_calibrating;
     uint8_t imu_calibrating, imu_cal_failed, fusion_mag_used, mag_calibrating, mag_calibration_step;
     uint8_t imu_ok, mag_ok, baro_ok, flash_ok, flow_valid, flow_quality;
+    uint16_t mag_cal_samples, mag_cal_rms_permille;
+    uint8_t mag_cal_coverage, mag_cal_reason;
     gui_present_stats_t display_stats;
     uint16_t render_ms;
 } gui_model_t;

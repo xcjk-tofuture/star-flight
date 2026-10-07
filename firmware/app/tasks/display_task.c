@@ -69,6 +69,7 @@ static void process_navigation(void) {
         if (command == GUI_COMMAND_REMOTE_START) sbus_request_calibration(0);
         else if (command == GUI_COMMAND_REMOTE_SAVE) sbus_request_calibration(1);
         else if (command == GUI_COMMAND_MAG_START) sensors_request_mag_calibration();
+        else if (command == GUI_COMMAND_MAG_CANCEL) sensors_cancel_mag_calibration();
     }
 }
 static void read_model(void) {
@@ -110,7 +111,11 @@ static void read_model(void) {
     sensor_processing_stats_t processing;
     sensor_processing_stats_read(&processing);
     model.fusion_mag_used=processing.mag_used;
-    model.mag_calibration_step = sensor_calibration_step();
+    sensor_mag_calibration_stats_t mag_cal;
+    sensor_mag_calibration_stats_read(&mag_cal);
+    model.mag_calibration_step=mag_cal.step; model.mag_cal_samples=mag_cal.samples;
+    model.mag_cal_rms_permille=mag_cal.rms_permille; model.mag_cal_coverage=mag_cal.coverage;
+    model.mag_cal_reason=mag_cal.reason;
     model.imu_ok = !Bmi088Init_Flag; model.mag_ok = !AK8975Flag; model.baro_ok = !SPL06Flag;
     model.flash_ok = (uint8_t)app_boot_flash_ready();
     model.flow_valid = !!flow.flowFlag; model.flow_quality = flow.flowConf;
@@ -130,6 +135,7 @@ void OLED_Task_Proc(void const *argument) {
     uav_logf("INFO", "GUI", "U8g2 128x64 Chinese_menu=12px rows=3 titles=12px pages=7 target=20Hz history=64@10Hz keys=2");
     TickType_t wake = xTaskGetTickCount();
     uint8_t mag_cal_was_active = 0;
+    uint8_t remote_cal_was_active = 0;
     for (;;) {
         uint32_t begin = platform_millis();
         if (!configured && (uint32_t)(begin-last_init_attempt) >= 1000u) {
@@ -139,8 +145,13 @@ void OLED_Task_Proc(void const *argument) {
             if (!configured) presenter.stats.errors++;
         }
         read_model(); process_navigation();
+        if (model.remote_calibrating) remote_cal_was_active=1;
+        else if (remote_cal_was_active) {
+            if (dashboard.page==GUI_PAGE_REMOTE_CAL) gui_dashboard_set_page(&dashboard,GUI_PAGE_OVERVIEW);
+            remote_cal_was_active=0;
+        }
         if (model.mag_calibrating) mag_cal_was_active = 1;
-        else if (mag_cal_was_active && dashboard.page == GUI_PAGE_MAG_CAL) {
+        else if (mag_cal_was_active && dashboard.page == GUI_PAGE_MAG_CAL && model.mag_calibration_step == SENSOR_MAG_DONE) {
             gui_dashboard_set_page(&dashboard, GUI_PAGE_OVERVIEW); mag_cal_was_active = 0;
         }
         gui_dashboard_update(&dashboard, &model);

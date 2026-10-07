@@ -88,6 +88,10 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
     if (input == GUI_INPUT_NEXT_PAGE) { gui_dashboard_next_page(d); return GUI_COMMAND_NONE; }
     if (input == GUI_INPUT_NEXT_VIEW) { gui_dashboard_next_view(d); return GUI_COMMAND_NONE; }
     if (input == GUI_INPUT_BACK) {
+        if (d->screen == GUI_SCREEN_PAGE && d->page == GUI_PAGE_MAG_CAL && m->mag_calibrating) {
+            if (m->mag_calibration_step >= 2) return GUI_COMMAND_NONE;
+            open_calibration(d, m); return GUI_COMMAND_MAG_CANCEL;
+        }
         if (d->screen == GUI_SCREEN_ROOT) d->screen = GUI_SCREEN_PAGE;
         else if (d->screen == GUI_SCREEN_CONFIRM || d->screen == GUI_SCREEN_MESSAGE) open_calibration(d, m);
         else if (d->screen == GUI_SCREEN_PAGE && d->page > GUI_PAGE_COUNT) open_calibration(d, m);
@@ -138,7 +142,7 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
         if (command == GUI_COMMAND_MAG_START && (!m->mag_ok || !m->attitude_valid || m->imu_calibrating || m->imu_cal_failed)) {
             d->message = MESSAGE_IMU; d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE;
         }
-        gui_dashboard_set_page(d, command == GUI_COMMAND_REMOTE_SAVE ? 1
+        gui_dashboard_set_page(d, command == GUI_COMMAND_REMOTE_SAVE ? GUI_PAGE_REMOTE_CAL
                                   : command == GUI_COMMAND_REMOTE_START ? GUI_PAGE_REMOTE_CAL : GUI_PAGE_MAG_CAL);
         return command;
     }
@@ -176,7 +180,7 @@ static void overview(gui_canvas_t *c, const gui_model_t *m) {
     gui_text(c, 79, 40, "T", GUI_FONT_TINY);
     gui_text(c, 2, 50, m->fusion_mag_used ? "9AXIS" : "6AXIS", GUI_FONT_TINY);
     gui_text(c, 38, 50, m->baro_ok ? "BARO OK" : "BARO ERR", GUI_FONT_TINY);
-    gui_text(c, 84, 50, m->flash_ok ? "FLASH OK" : "FLASH ERR", GUI_FONT_TINY);
+    gui_text(c, 84, 50, m->flash_ok ? "NVM OK" : "NVM ERR", GUI_FONT_TINY);
 }
 static void attitude(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
     u8g2_SetClipWindow(&c->graphics, 0, 16, 82, 56);
@@ -315,7 +319,7 @@ static void health(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
                    m->imu_cal_failed ? "CAL FAIL" : m->imu_ok ? m->fusion_mag_used ? "9AXIS OK" : "6AXIS" : "FAILED");
         health_row(c, 24, "BAROMETER", m->baro_ok, m->baro_ok ? "OK" : "FAILED");
         health_row(c, 34, "RC / FLOW", m->rc_connected, m->rc_connected ? m->flow_valid ? "BOTH OK" : "NO FLOW" : "NO RC");
-        health_row(c, 44, "FLASH BOOT", m->flash_ok, m->flash_ok ? "OK" : "ID ERROR");
+        health_row(c, 44, "PARAM NVM", m->flash_ok, m->flash_ok ? "INTERNAL" : "FAILED");
     } else if (view == 1) {
         gui_text(c, 2, 16, "RTOS FREE / MIN B", GUI_FONT_TINY);
         number(c, 2, 23, m->heap_free, 0, 0, 1, GUI_FONT_LARGE);
@@ -335,11 +339,21 @@ static void health(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
     }
 }
 static void mag_cal(gui_canvas_t *c, const gui_model_t *m) {
-    static const char *const prompts[] = {"绕横滚轴旋转", "绕俯仰轴旋转", "绕航向轴旋转", "正在保存", "校准完成"};
+    static const char *const prompts[] = {"绕三轴旋转", "正在校准", "正在保存", "校准完成", "校准失败"};
     unsigned step = m->mag_calibration_step > 4 ? 4 : m->mag_calibration_step;
     gui_text(c, 10, 16, prompts[step], GUI_FONT_CN12);
-    gui_bar(c, 4, 31, 120, 6, step, 0, 4);
-    vector_row(c, 46, "BIAS", m->mag_bias, m->mag_ok, 1, 1);
+    gui_text(c, 4, 31, "N", GUI_FONT_TINY);
+    number(c, 12, 31, m->mag_cal_samples, 0, 0, 1, GUI_FONT_TINY);
+    unsigned octants=0;
+    for (unsigned i=0;i<8;i++) if (m->mag_cal_coverage & (1u<<i)) octants++;
+    gui_text(c, 50, 31, "OCT", GUI_FONT_TINY);
+    number(c, 68, 31, octants, 0, 0, 1, GUI_FONT_TINY);
+    gui_text(c, 78, 31, "/8", GUI_FONT_TINY);
+    gui_bar(c, 4, 40, 120, 4, m->mag_cal_samples, 0, 200);
+    gui_text(c, 4, 48, "RMS%", GUI_FONT_TINY);
+    number(c, 27, 48, m->mag_cal_rms_permille*.1f, 1, 0, m->mag_cal_samples>=200, GUI_FONT_TINY);
+    gui_text(c, 79, 48, "ERR", GUI_FONT_TINY);
+    number(c, 102, 48, m->mag_cal_reason, 0, 0, 1, GUI_FONT_TINY);
 }
 void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t *m) {
     gui_clear(c);
