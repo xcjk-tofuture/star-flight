@@ -1,5 +1,12 @@
 {
   "version": "2.0.0",
+  "options": {
+    "cwd": "${workspaceFolder}",
+    "env": {
+      "ARM_GCC_PATH": "C:/Users/xcjk/Documents/Codex/2026-10-07/https-github-com-xcjk-tofuture-star/work/toolchains/arm-gnu-toolchain-13.3.rel1-mingw-w64-i686-arm-none-eabi",
+      "PATH": "C:/Users/xcjk/Documents/Codex/2026-10-07/https-github-com-xcjk-tofuture-star/work/toolchains/arm-gnu-toolchain-13.3.rel1-mingw-w64-i686-arm-none-eabi/bin;C:/Users/xcjk/AppData/Local/Microsoft/WinGet/Packages/Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe;${env:PATH}"
+    }
+  },
   "tasks": [
     {
       "label": "CMake: configure",
@@ -31,14 +38,16 @@
       ]
     },
     {
-      "label": "OpenOCD: flash",
+      "label": "VLLINK: flash HEX",
       "type": "process",
-      "command": "cmake",
+      "command": "C:/Users/xcjk/Documents/Codex/2026-10-07/https-github-com-xcjk-tofuture-star/work/toolchains/xpack-openocd-0.12.0-7/bin/openocd.exe",
       "args": [
-        "--build",
-        "build/debug",
-        "--target",
-        "flash"
+        "-s",
+        "C:/Users/xcjk/Documents/Codex/2026-10-07/https-github-com-xcjk-tofuture-star/work/toolchains/xpack-openocd-0.12.0-7/openocd/scripts",
+        "-f",
+        "${workspaceFolder}/openocd/board-cmsis-dap.cfg",
+        "-c",
+        "program {${workspaceFolder}/build/debug/xingxuan_uav.hex} verify reset exit"
       ],
       "dependsOn": "CMake: build",
       "dependsOrder": "sequence",
