@@ -8,6 +8,8 @@
 #include "star_dispatch.h"
 #include <string.h>
 #include "flight_snapshot.h"
+#include "log_service.h"
+#include "uav_events.h"
 osThreadId PCTaskHandle;
 typedef struct {
     uint16_t length;
@@ -18,6 +20,7 @@ static volatile uint8_t receive_lost;
 static star_parser_t parser;
 static star_dispatch_t dispatcher;
 static uint16_t event_sequence;
+static uint16_t log_sequence;
 extern uint8_t uart1RX[100];
 static uint8_t business(void *context, const star_frame_t *q, star_frame_t *r) {
     (void)context;
@@ -106,6 +109,16 @@ void PC_Task_Proc(void const *argument) {
             event.flags = STAR_EVENT;
             send_frame(&event);
             last_telemetry = now;
+        }
+        /* One bounded log chunk per loop; responses and telemetry go first.
+         * This task owns all USART1 TX, so frame bytes never interleave. */
+        size_t log_length = uav_log_receive(event.payload, UAV_LOG_FRAME_BYTES, 0);
+        if (log_length) {
+            event.flags = STAR_EVENT;
+            event.sequence = log_sequence++;
+            event.command = UAV_EVENT_LOG;
+            event.length = (uint16_t)log_length;
+            send_frame(&event);
         }
     }
 }

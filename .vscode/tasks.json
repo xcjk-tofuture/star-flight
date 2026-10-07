@@ -52,6 +52,26 @@
       "dependsOn": "CMake: build",
       "dependsOrder": "sequence",
       "problemMatcher": []
+    },
+    {
+      "label": "USART1: telemetry + LOG",
+      "type": "process",
+      "command": "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/tools/uart-monitor.ps1",
+        "-Port",
+        "COM7",
+        "-ShowTelemetry"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
     }
   ]
 }

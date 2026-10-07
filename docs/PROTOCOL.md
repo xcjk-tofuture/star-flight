@@ -1,5 +1,8 @@
 # StarFlight（StarFlight）串口协议
 
+USART1 的遥测/日志复用见 [UART_LOG.md](UART_LOG.md)。本工程增加 `0x20F0`
+LOG 事件，沿用原 v1 帧格式和 CRC；原遥测与查询结构保持兼容。
+
 `services/protocol` 与 `algorithms` 不依赖芯片、RTOS、业务全局变量。STM32、TM4C 和星璇各自包含相同版本的协议源码；修改公共源码须运行主机检查并核对三处 SHA256。星璇只复用协议，不复用底盘业务。
 
 协议 v1：`A5 5A | version:u8 | flags:u8 | sequence:u16 | command:u16 | length:u16 | payload | CRC16:u16`。所有多字节字段小端，CRC16/CCITT-FALSE（poly=0x1021, init=0xFFFF）覆盖 version 到 payload。长度最大 128，帧间接收超时 100ms。请求 flags=0，应答=1，主动遥测=2。响应第一字节为错误码；异步遥测使用相同 status 数据结构并保留第一字节状态码 0。

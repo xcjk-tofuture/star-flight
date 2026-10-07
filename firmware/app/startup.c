@@ -12,8 +12,6 @@ extern osThreadId RGBTaskHandle;
 extern void RGB_Task_Proc(void const *argument);
 extern osThreadId KeyTaskHandle;
 extern void Key_Task_Proc(void const *argument);
-extern osThreadId BleUart3TaskHandle;
-extern void Ble_Uart3_Task_Proc(void const *argument);
 extern osThreadId SbusUart6TaskHandle;
 extern void Sbus_Uart6_Task_Proc(void const *argument);
 extern osThreadId OLEDTaskHandle;
@@ -39,10 +37,6 @@ void app_tasks_init(void) {
     osThreadDef(Key, Key_Task_Proc, osPriorityIdle, 0, 128);
     KeyTaskHandle = osThreadCreate(osThread(Key), NULL);
     if (!KeyTaskHandle)
-        Error_Handler();
-    osThreadDef(Ble, Ble_Uart3_Task_Proc, osPriorityIdle, 0, 128);
-    BleUart3TaskHandle = osThreadCreate(osThread(Ble), NULL);
-    if (!BleUart3TaskHandle)
         Error_Handler();
     osThreadDef(Sbus, Sbus_Uart6_Task_Proc, osPriorityAboveNormal, 0, 256);
     SbusUart6TaskHandle = osThreadCreate(osThread(Sbus), NULL);
