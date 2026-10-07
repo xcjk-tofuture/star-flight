@@ -6,7 +6,7 @@
 #include "platform_time.h"
 
 #include "lowPassFilter.h"
-#include "matrix6.h"
+#include "imu_calibration_config.h"
 #include "pid.h"
 #include "tim.h"
 #include "stdio.h"
@@ -20,14 +20,12 @@
 #define UPDATE_TIME 5
 #define UPDATE_TIME_MAG 20
 
-#define CALIBRATION_COUNT 500 // 决定用多少个值去做校准
 
 extern void UAV_Read_Param_IMU(_imuData_all *imu_data);
-extern void UAV_Write_Param_IMU(_imuData_all imu_data);
+extern int UAV_Write_Param_IMU(_imuData_all imu_data);
 
 extern u8 uart4RX[200];
 
-float gyroCalibration[CALIBRATION_COUNT];
 
 osThreadId SensorDataTaskHandle;
 
@@ -49,13 +47,12 @@ PID_DATA imu_temperature_control_pid_data;
 PID imu_temperature_control_pid;
 
 u8 SensorError = 0;
-static u8 AccCalFlag = 1;  // 传感器校准标准位
 static u8 GyroCalFlag = 1; // 传感器校准标准位
 
 static u8 MagCalFlag = 0;
 uint8_t sensor_imu_calibrating(void) {
     taskENTER_CRITICAL();
-    uint8_t active = AccCalFlag || GyroCalFlag;
+    uint8_t active = GyroCalFlag;
     taskEXIT_CRITICAL();
     return active;
 }
@@ -83,6 +80,16 @@ void Sensor_Data_Task_Proc(void const *argument) {
 #endif
 
     UAV_Read_Param_IMU(&imudata_all);
+    static uav_gyro_calibration_t startup_gyro;
+    int gyro_configured = uav_gyro_calibration_init(&startup_gyro, &uav_board_gyro_calibration) == 0;
+    if (!gyro_configured)
+        SensorError = 1;
+    uav_logf(gyro_configured ? "INFO" : "ERROR", "GYRO_CAL",
+             "window=%u samples period=5ms max_rate=%ldmrad/s max_std=%ldmrad/s configured=%u",
+             (unsigned)uav_board_gyro_calibration.samples,
+             (long)(uav_board_gyro_calibration.max_rate_rad_s * 1000.0f),
+             (long)(uav_board_gyro_calibration.max_rate_std_rad_s * 1000.0f),
+             (unsigned)gyro_configured);
     static TickType_t xLastWakeTime;
     xLastWakeTime = xTaskGetTickCount();
     uint32_t last_mag_id_retry = platform_millis();
@@ -93,6 +100,8 @@ void Sensor_Data_Task_Proc(void const *argument) {
         if ((TickType_t)(xTaskGetTickCount() - xLastWakeTime) > pdMS_TO_TICKS(5)) {
             xLastWakeTime = xTaskGetTickCount();
             flight_attitude_invalidate();
+            if (GyroCalFlag)
+                uav_gyro_calibration_init(&startup_gyro, &uav_board_gyro_calibration);
         }
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1)); // 绝对延时
         sensorTimeCount++;
@@ -100,7 +109,15 @@ void Sensor_Data_Task_Proc(void const *argument) {
         uint8_t request = mag_request;
         mag_request = 0;
         taskEXIT_CRITICAL();
+        flight_snapshot_t flight;
+        flight_snapshot_read(&flight);
+        if (request && flight.state != 0) {
+            uav_logf("WARN", "SENSOR", "magnetic calibration rejected: flight_state=%u", (unsigned)flight.state);
+            request = 0;
+        }
         if (request && !AK8975Flag) {
+            if (GyroCalFlag)
+                uav_gyro_calibration_init(&startup_gyro, &uav_board_gyro_calibration);
             MagCalFlag = 1;
             flight_attitude_invalidate();
         } else if (request)
@@ -125,7 +142,7 @@ void Sensor_Data_Task_Proc(void const *argument) {
             taskEXIT_CRITICAL();
             /* BMI088 is required for attitude. Optional sensor failures retain
              * their diagnostic flags without blocking six-axis operation. */
-            if (!(AccCalFlag || GyroCalFlag || MagCalFlag || Bmi088Init_Flag)) {
+            if (gyro_configured && !(GyroCalFlag || MagCalFlag || Bmi088Init_Flag)) {
                 // AHRS_Kalman_Update(imudata_all, &attitude_t);
                 if (AHRS_Mahony_Update(imudata_all, &attitude_t) == 0)
                     flight_attitude_publish(attitude_t.roll, attitude_t.pitch, attitude_t.yaw,
@@ -138,9 +155,18 @@ void Sensor_Data_Task_Proc(void const *argument) {
             } else {
                 // printf("CALLING... \r\n");
                 flight_attitude_invalidate();
-                Sensor_Calibration(&imudata_all);
-                if (sensorTimeCount == CALIBRATION_COUNT * UPDATE_TIME)
+                const float gyro[3] = {test_gyro.roll, test_gyro.pitch, test_gyro.yaw};
+                const float acc[3] = {test_acc.x, test_acc.y, test_acc.z};
+                float bias[3];
+                if (gyro_configured && !Bmi088Init_Flag && GyroCalFlag &&
+                    uav_gyro_calibration_feed(&startup_gyro, gyro, acc, bias) == UAV_GYRO_READY) {
+                    imudata_all.gyrooffsetbias = (Vector3f_t){bias[0], bias[1], bias[2]};
+                    GyroCalFlag = 0;
                     Cold_Start_ARHS(imudata_all, &attitude_t);
+                    uav_logf("INFO", "GYRO_CAL", "complete bias_mrad/s=%ld,%ld,%ld mode=%s",
+                             (long)(bias[0] * 1000.0f), (long)(bias[1] * 1000.0f),
+                             (long)(bias[2] * 1000.0f), AK8975Flag ? "6AXIS" : "9AXIS");
+                }
             }
 #endif
         }
@@ -244,14 +270,6 @@ void Sensors_Init() // 传感器初始化
         uav_logf("WARN", "AHRS", "magnetometer unavailable; six-axis attitude; yaw has no magnetic reference and may drift");
 }
 
-void Sensor_Calibration(_imuData_all *imu) // 传感器校准
-{
-    if (GyroCalFlag)
-        Simple_Zero_Offset_Calibration(imu, &(imu->gyrooffsetbias)); // 简单零偏误差校准
-    if (AccCalFlag)
-        Acc_LMS_Calibration(imu, &(imu->accoffsetbias), &(imu->accscalebias));
-}
-
 static u8 magCalistep = 0;
 uint8_t sensor_calibration_step(void) {
     taskENTER_CRITICAL();
@@ -307,114 +325,6 @@ void Mag_Zero_Offset_Calibration(_imuData_all *imu) {
         MagCalFlag = 0;
         break;
     }
-}
-
-void Simple_Zero_Offset_Calibration(_imuData_all *imu, Vector3f_t *offset) // 陀螺仪零偏校准
-{
-    static float gyroBias[3] = {0.0f};
-    static int i = 0;
-
-    gyroBias[0] += imu->gyro.roll;
-    gyroBias[1] += imu->gyro.pitch;
-    gyroBias[2] += imu->gyro.yaw;
-
-    i++;
-    if (i >= CALIBRATION_COUNT) {
-
-        if (gyroBias[0] >= 500 || gyroBias[1] >= 500 || gyroBias[2] >= 500) // 陀螺仪存在运动状态
-        {
-            i = 0;
-            gyroBias[0] = 0;
-            gyroBias[1] = 0;
-            gyroBias[2] = 0;
-        } else {
-            gyroBias[0] /= i;
-            gyroBias[1] /= i;
-            gyroBias[2] /= i;
-
-            offset->x = gyroBias[0];
-            offset->y = gyroBias[1];
-            offset->z = gyroBias[2];
-            // printf("%d\r\n",i);
-            GyroCalFlag = 0;
-        }
-    }
-}
-
-float raw[6][3];
-void Acc_LMS_Calibration(_imuData_all *imu, Vector3f_t *offset,
-                         Vector3f_t *scale) // 传感器广义椭球校准
-{
-    osDelay(200);
-    static int i = 0;
-    raw[i][0] = imu->acc.x;
-    raw[i][1] = imu->acc.y;
-    raw[i][2] = imu->acc.z;
-    i++;
-    if (i == 6) {
-        // LMS_Fitting(raw, offset, scale);
-        AccCalFlag = 0;
-    }
-}
-
-void LMS_Fitting(float raw[6][3], Vector3f_t *offset, Vector3f_t *scale) // 用于椭球拟合加速度拟合
-{
-    float x[6], y[6], z[6];
-    float m[6][6];
-    float m_t[6][6];
-    float m_txm_inv[6][6];
-    float m_txm_invxm_t[6][6];
-    float m_txm[6][6];
-    float p[6];
-    double v[7] = {0};
-    float x0, y0, z0, A, B, C;
-
-    for (int i = 0; i <= 5; i++) {
-        x[i] = raw[i][0];
-        y[i] = raw[i][1];
-        z[i] = raw[i][2];
-    }
-    for (int i = 0; i < 6; i++)
-        p[i] = -(x[i] * x[i]); // p矩阵
-    for (int i = 0; i <= 5; i++) {
-        m[i][0] = y[i] * y[i];
-        m[i][1] = z[i] * z[i];
-        m[i][2] = x[i];
-        m[i][3] = y[i];
-        m[i][4] = z[i];
-        m[i][5] = 1.0f; // m矩阵
-    }
-
-    Matrix6_Tran(m, m_t); // 求m的转置
-    Matrix6_Mul(m_t, m, m_txm);
-    if (!Matrix6_Det(m_txm, m_txm_inv))
-        return;
-    Matrix6_Mul(m_txm_inv, m_t, m_txm_invxm_t);
-
-    for (int i = 0; i < 6; i++) {
-        v[0] += (m_txm_invxm_t[0][i] * p[i]);
-        v[1] += (m_txm_invxm_t[1][i] * p[i]);
-        v[2] += (m_txm_invxm_t[2][i] * p[i]);
-        v[3] += (m_txm_invxm_t[3][i] * p[i]);
-        v[4] += (m_txm_invxm_t[4][i] * p[i]);
-        v[5] += (m_txm_invxm_t[5][i] * p[i]);
-
-        // printf("%f\n",m_txm_invxm_t[5][i] * p[i]);
-    }
-    x0 = -v[2] / 2;
-    y0 = -v[3] / (2 * v[0]);
-    z0 = -v[4] / (2 * v[1]);
-    A = sqrt(x0 * x0 + v[1] * y0 * y0 + v[1] * z0 * z0 - v[5]);
-    B = A * invSqrt(v[0]);
-    C = A * invSqrt(v[1]);
-
-    offset->x = x0;
-    offset->y = y0;
-    offset->z = z0;
-
-    scale->x = A;
-    scale->y = B;
-    scale->z = C;
 }
 
 void IMU_Temperature_Control_Init() // IMU恒温控制初始化

@@ -1,18 +1,28 @@
 #include "flash_proc.h"
+#include "param_journal.h"
+#include "calibration_record.h"
+#include "star_protocol.h"
+#include "flight_snapshot.h"
 #include "queue.h"
 #include "semphr.h"
-#include <math.h>
+#include <string.h>
 static SemaphoreHandle_t storage_mutex;
 static QueueHandle_t writes;
+static uint8_t flash_checked, flash_ready;
+static volatile uint32_t pending_writes;
+static uint32_t rejected_writes, storage_sequence[3];
 typedef struct {
-    uint8_t kind;
-    union {
-        _imuData_all imu;
-        _sbus_ch_struct remote;
-        _uav_control_data motor;
-    } data;
+    uint8_t kind, length;
+    uint8_t bytes[72];
 } storage_request_t;
 osThreadId FlashTaskHandle;
+uint8_t uav_storage_busy(void) { return pending_writes != 0; }
+void uav_storage_diagnostics(uint32_t *rejected, uint32_t sequence[3]) {
+    taskENTER_CRITICAL();
+    *rejected = rejected_writes;
+    memcpy(sequence, storage_sequence, sizeof(storage_sequence));
+    taskEXIT_CRITICAL();
+}
 int uav_storage_init(void) {
     storage_mutex = xSemaphoreCreateMutex();
     writes = xQueueCreate(2, sizeof(storage_request_t));
@@ -21,241 +31,174 @@ int uav_storage_init(void) {
 static void storage_lock(void) {
     if (!storage_mutex || xSemaphoreTake(storage_mutex, pdMS_TO_TICKS(1000)) != pdTRUE)
         Error_Handler();
+    if (!flash_checked) {
+        uint16_t id = W25QXX_ReadID();
+        flash_ready = id >= W25Q80 && id <= W25Q128;
+        flash_checked = 1;
+    }
 }
 static void storage_unlock(void) { xSemaphoreGive(storage_mutex); }
-
-#define EXTERN_FLASH 1
-
-#define FLASH_IMU_ADDR 0X000
-#define FLASH_REMOTE_ADDR 0X200
-#define FLASH_MOTOR_ADDR 0X400
-
-// extern _uav_control_data uav_control_data;
-//_uav_control_data uav_control_test_data;
-
-// 读飞控IMU数据 主要占据0x000 - 0x199
-void UAV_Read_Param_IMU(_imuData_all *imu_data) {
+static uint32_t address(void *ctx, unsigned slot) {
+    return (uint32_t)(uintptr_t)ctx + slot * 4096u;
+}
+static int valid(unsigned slot, unsigned offset, size_t n) {
+    return slot < 2 && offset <= PJ_RECORD_BYTES && n <= PJ_RECORD_BYTES - offset;
+}
+static int read_bytes(void *ctx, unsigned slot, unsigned offset, uint8_t *b, size_t n) {
+    if (!flash_ready || !valid(slot, offset, n))
+        return -1;
+    W25QXX_Read(b, address(ctx, slot) + offset, (uint16_t)n);
+    return 0;
+}
+static int erase_slot(void *ctx, unsigned slot) {
+    if (!flash_ready || slot > 1)
+        return -1;
+    W25QXX_Erase_Sector(address(ctx, slot) / 4096u);
+    return 0;
+}
+static int program_bytes(void *ctx, unsigned slot, unsigned offset, const uint8_t *b, size_t n) {
+    if (!flash_ready || !valid(slot, offset, n))
+        return -1;
+    W25QXX_Write_NoCheck((uint8_t *)b, address(ctx, slot) + offset, (uint16_t)n);
+    return 0;
+}
+static pj_io_t io_for(unsigned kind) {
+    pj_io_t io = {(void *)(uintptr_t)(4096u + (kind - 1u) * 8192u), read_bytes, erase_slot,
+                  program_bytes};
+    return io;
+}
+static int load(unsigned kind, uint8_t *bytes, size_t length) {
+    pj_value_t value;
+    pj_io_t io = io_for(kind);
+    int ok;
     storage_lock();
-
-    u8 temp_imu_read[18 * 4] = {0};
-    float temp_imu_read_value[18] = {0};
-    W25QXX_Read(temp_imu_read, FLASH_IMU_ADDR, sizeof(temp_imu_read));
-    memcpy(temp_imu_read_value, temp_imu_read, sizeof(temp_imu_read));
-
-    //	imu_data->accoffsetbias.x = temp_imu_read_value[0];
-    //	imu_data->accoffsetbias.y = temp_imu_read_value[1];
-    //	imu_data->accoffsetbias.z = temp_imu_read_value[2];
-    //	imu_data->accscalebias.x = temp_imu_read_value[3];
-    //	imu_data->accscalebias.y = temp_imu_read_value[4];
-    //	imu_data->accscalebias.z = temp_imu_read_value[5];
-    //
-    //
-    //  imu_data->gyrooffsetbias.x = temp_imu_read_value[6];
-    //	imu_data->gyrooffsetbias.y = temp_imu_read_value[7];
-    //	imu_data->gyrooffsetbias.z = temp_imu_read_value[8];
-    //	imu_data->gyroscalebias.x = temp_imu_read_value[9];
-    //	imu_data->gyroscalebias.y = temp_imu_read_value[10];
-    //	imu_data->gyroscalebias.z = temp_imu_read_value[11];
-
-    for (unsigned i = 12; i < 18; i++) {
-        if (!isfinite(temp_imu_read_value[i]))
-            temp_imu_read_value[i] = i < 15 ? 0.0f : 1.0f;
+    ok = pj_load(&io, (uint16_t)kind, 1, &value) == PJ_OK && value.length == length &&
+         calibration_record_valid(kind, value.payload, length);
+    if (ok) {
+        memcpy(bytes, value.payload, length);
+        taskENTER_CRITICAL();
+        storage_sequence[kind - 1] = value.sequence;
+        taskEXIT_CRITICAL();
     }
-    imu_data->magoffsetbias.x = temp_imu_read_value[12];
-    imu_data->magoffsetbias.y = temp_imu_read_value[13];
-    imu_data->magoffsetbias.z = temp_imu_read_value[14];
-    imu_data->magscalebias.x = temp_imu_read_value[15];
-    imu_data->magscalebias.y = temp_imu_read_value[16];
-    imu_data->magscalebias.z = temp_imu_read_value[17];
-
     storage_unlock();
+    return ok;
 }
-
-// 读飞控遥控器数据 主要占据0x200 - 0x399
-void UAV_Read_Param_Remote(_sbus_ch_struct *channel_data) {
-    storage_lock();
-
-    u8 temp_remote_read[8 * 2 * 2] = {0};
-    u16 temp_remote_read_value[8 * 2] = {0};
-    W25QXX_Read(temp_remote_read, FLASH_REMOTE_ADDR, sizeof(temp_remote_read));
-    memcpy(temp_remote_read_value, temp_remote_read, sizeof(temp_remote_read));
-
-    channel_data->CH1_MAX = temp_remote_read_value[0];
-    channel_data->CH1_MIN = temp_remote_read_value[1];
-
-    channel_data->CH2_MAX = temp_remote_read_value[2];
-    channel_data->CH2_MIN = temp_remote_read_value[3];
-
-    channel_data->CH3_MAX = temp_remote_read_value[4];
-    channel_data->CH3_MIN = temp_remote_read_value[5];
-
-    channel_data->CH4_MAX = temp_remote_read_value[6];
-    channel_data->CH4_MIN = temp_remote_read_value[7];
-
-    channel_data->CH5_MAX = temp_remote_read_value[8];
-    channel_data->CH5_MIN = temp_remote_read_value[9];
-
-    channel_data->CH6_MAX = temp_remote_read_value[10];
-    channel_data->CH6_MIN = temp_remote_read_value[11];
-
-    channel_data->CH7_MAX = temp_remote_read_value[12];
-    channel_data->CH7_MIN = temp_remote_read_value[13];
-
-    channel_data->CH8_MAX = temp_remote_read_value[14];
-    channel_data->CH8_MIN = temp_remote_read_value[15];
-    storage_unlock();
+void UAV_Read_Param_IMU(_imuData_all *d) {
+    uint8_t b[72];
+    d->magoffsetbias = (Vector3f_t){0, 0, 0};
+    d->magscalebias = (Vector3f_t){1, 1, 1};
+    if (!load(1, b, sizeof(b)))
+        return;
+    /* Startup gyro/accelerometer calibration retains ownership. Only magnetic
+     * coefficients are restored, as in the refactor baseline. */
+    d->magoffsetbias =
+        (Vector3f_t){star_read_f32(b + 48), star_read_f32(b + 52), star_read_f32(b + 56)};
+    d->magscalebias =
+        (Vector3f_t){star_read_f32(b + 60), star_read_f32(b + 64), star_read_f32(b + 68)};
 }
-
-// 读飞控电机数据  主要占据0x400 - 0x599
-void UAV_Read_Param_Motor(_uav_control_data *motor_data) {
-    storage_lock();
-
-    u8 temp_motor_read[5 * 3 * 4] = {0};
-    float temp_motor_read_value[15] = {0};
-    W25QXX_Read(temp_motor_read, FLASH_MOTOR_ADDR, sizeof(temp_motor_read));
-    memcpy(temp_motor_read_value, temp_motor_read, sizeof(temp_motor_read));
-
-    motor_data->rollData.Kp = temp_motor_read_value[0];
-    motor_data->rollData.Ki = temp_motor_read_value[1];
-    motor_data->rollData.Kd = temp_motor_read_value[2];
-
-    motor_data->pitchData.Kp = temp_motor_read_value[3];
-    motor_data->pitchData.Ki = temp_motor_read_value[4];
-    motor_data->pitchData.Kd = temp_motor_read_value[5];
-
-    motor_data->yawData.Kp = temp_motor_read_value[6];
-    motor_data->yawData.Ki = temp_motor_read_value[7];
-    motor_data->yawData.Kd = temp_motor_read_value[8];
-
-    motor_data->rollSpeedData.Kp = temp_motor_read_value[9];
-    motor_data->rollSpeedData.Ki = temp_motor_read_value[10];
-    motor_data->rollSpeedData.Kd = temp_motor_read_value[11];
-
-    motor_data->pitchSpeedData.Kp = temp_motor_read_value[12];
-    motor_data->pitchSpeedData.Ki = temp_motor_read_value[13];
-    motor_data->pitchSpeedData.Kd = temp_motor_read_value[14];
-
-    storage_unlock();
+void UAV_Read_Param_Remote(_sbus_ch_struct *d) {
+    uint8_t b[32];
+    memset(b, 0, sizeof(b));
+    (void)load(2, b, sizeof(b));
+#define GET_CHANNEL(i)                                                                             \
+    d->CH##i##_MAX = star_read_u16(b + ((i) - 1) * 4);                                             \
+    d->CH##i##_MIN = star_read_u16(b + ((i) - 1) * 4 + 2)
+    GET_CHANNEL(1);
+    GET_CHANNEL(2);
+    GET_CHANNEL(3);
+    GET_CHANNEL(4);
+    GET_CHANNEL(5);
+    GET_CHANNEL(6);
+    GET_CHANNEL(7);
+    GET_CHANNEL(8);
+#undef GET_CHANNEL
 }
-
-// 写飞控IMU数据 主要占据0x000 - 0x199
-static void storage_write_IMU(_imuData_all imu_data) {
-    float temp_imu_write[18] = {0};
-    temp_imu_write[0] = imu_data.accoffsetbias.x;
-    temp_imu_write[1] = imu_data.accoffsetbias.y;
-    temp_imu_write[2] = imu_data.accoffsetbias.z;
-    temp_imu_write[3] = imu_data.accscalebias.x;
-    temp_imu_write[4] = imu_data.accscalebias.y;
-    temp_imu_write[5] = imu_data.accscalebias.z;
-
-    temp_imu_write[6] = imu_data.gyrooffsetbias.x;
-    temp_imu_write[7] = imu_data.gyrooffsetbias.y;
-    temp_imu_write[8] = imu_data.gyrooffsetbias.z;
-    temp_imu_write[9] = imu_data.gyroscalebias.x;
-    temp_imu_write[10] = imu_data.gyroscalebias.y;
-    temp_imu_write[11] = imu_data.gyroscalebias.z;
-
-    temp_imu_write[12] = imu_data.magoffsetbias.x;
-    temp_imu_write[13] = imu_data.magoffsetbias.y;
-    temp_imu_write[14] = imu_data.magoffsetbias.z;
-    temp_imu_write[15] = imu_data.magscalebias.x;
-    temp_imu_write[16] = imu_data.magscalebias.y;
-    temp_imu_write[17] = imu_data.magscalebias.z;
-
-    W25QXX_Write((u8 *)temp_imu_write, FLASH_IMU_ADDR, sizeof(temp_imu_write));
+void UAV_Read_Param_Motor(_uav_control_data *d) {
+    uint8_t b[60];
+    if (!load(3, b, sizeof(b)))
+        return;
+    PID_DATA *p[5] = {&d->rollData, &d->pitchData, &d->yawData, &d->rollSpeedData,
+                      &d->pitchSpeedData};
+    for (unsigned i = 0; i < 5; i++) {
+        p[i]->Kp = star_read_f32(b + i * 12);
+        p[i]->Ki = star_read_f32(b + i * 12 + 4);
+        p[i]->Kd = star_read_f32(b + i * 12 + 8);
+    }
 }
-
-// 写飞控遥控器数据 主要占据0x200 - 0x399
-static void storage_write_Remote(_sbus_ch_struct channe_data) {
-    uint16_t temp_remote_write[16] = {0};
-    temp_remote_write[0] = channe_data.CH1_MAX;
-    temp_remote_write[1] = channe_data.CH1_MIN;
-
-    temp_remote_write[2] = channe_data.CH2_MAX;
-    temp_remote_write[3] = channe_data.CH2_MIN;
-
-    temp_remote_write[4] = channe_data.CH3_MAX;
-    temp_remote_write[5] = channe_data.CH3_MIN;
-
-    temp_remote_write[6] = channe_data.CH4_MAX;
-    temp_remote_write[7] = channe_data.CH4_MIN;
-
-    temp_remote_write[8] = channe_data.CH5_MAX;
-    temp_remote_write[9] = channe_data.CH5_MIN;
-
-    temp_remote_write[10] = channe_data.CH6_MAX;
-    temp_remote_write[11] = channe_data.CH6_MIN;
-
-    temp_remote_write[12] = channe_data.CH7_MAX;
-    temp_remote_write[13] = channe_data.CH7_MIN;
-
-    temp_remote_write[14] = channe_data.CH8_MAX;
-    temp_remote_write[15] = channe_data.CH8_MIN;
-
-    W25QXX_Write((u8 *)temp_remote_write, FLASH_REMOTE_ADDR, sizeof(temp_remote_write));
+static int enqueue(storage_request_t *r) {
+    int ok = 0;
+    flight_snapshot_t state;
+    if (!calibration_record_valid(r->kind, r->bytes, r->length)) {
+        taskENTER_CRITICAL();
+        rejected_writes++;
+        taskEXIT_CRITICAL();
+        return -2;
+    }
+    taskENTER_CRITICAL();
+    flight_snapshot_read(&state);
+    if (state.state == 0 && writes && xQueueSend(writes, r, 0) == pdPASS) {
+        pending_writes++;
+        ok = 1;
+    } else
+        rejected_writes++;
+    taskEXIT_CRITICAL();
+    return ok ? 0 : -1;
 }
-
-// 写飞控电机数据  主要占据0x400 - 0x599
-static void storage_write_Motor(_uav_control_data motor_data) {
-    float temp_motor_write[15] = {0};
-
-    temp_motor_write[0] = motor_data.rollData.Kp;
-    temp_motor_write[1] = motor_data.rollData.Ki;
-    temp_motor_write[2] = motor_data.rollData.Kd;
-
-    temp_motor_write[3] = motor_data.pitchData.Kp;
-    temp_motor_write[4] = motor_data.pitchData.Ki;
-    temp_motor_write[5] = motor_data.pitchData.Kd;
-
-    temp_motor_write[6] = motor_data.yawData.Kp;
-    temp_motor_write[7] = motor_data.yawData.Ki;
-    temp_motor_write[8] = motor_data.yawData.Kd;
-
-    temp_motor_write[9] = motor_data.rollSpeedData.Kp;
-    temp_motor_write[10] = motor_data.rollSpeedData.Ki;
-    temp_motor_write[11] = motor_data.rollSpeedData.Kd;
-
-    temp_motor_write[12] = motor_data.pitchSpeedData.Kp;
-    temp_motor_write[13] = motor_data.pitchSpeedData.Ki;
-    temp_motor_write[14] = motor_data.pitchSpeedData.Kd;
-
-    W25QXX_Write((u8 *)temp_motor_write, FLASH_MOTOR_ADDR, sizeof(temp_motor_write));
+int UAV_Write_Param_IMU(_imuData_all d) {
+    storage_request_t r = {.kind = 1, .length = 72};
+    float v[18] = {d.accoffsetbias.x,  d.accoffsetbias.y, d.accoffsetbias.z,  d.accscalebias.x,
+                   d.accscalebias.y,   d.accscalebias.z,  d.gyrooffsetbias.x, d.gyrooffsetbias.y,
+                   d.gyrooffsetbias.z, d.gyroscalebias.x, d.gyroscalebias.y,  d.gyroscalebias.z,
+                   d.magoffsetbias.x,  d.magoffsetbias.y, d.magoffsetbias.z,  d.magscalebias.x,
+                   d.magscalebias.y,   d.magscalebias.z};
+    for (unsigned i = 0; i < 18; i++)
+        star_write_f32(r.bytes + i * 4, v[i]);
+    return enqueue(&r);
 }
-
-// SPI读写一个字节
-// TxData:要写入的字节
-// 返回值:读取到的字节
-void UAV_Write_Param_IMU(_imuData_all data) {
-    storage_request_t request = {.kind = 0};
-    request.data.imu = data;
-    if (!writes || xQueueSend(writes, &request, 0) != pdPASS)
-        Error_Handler();
+int UAV_Write_Param_Remote(_sbus_ch_struct d) {
+    storage_request_t r = {.kind = 2, .length = 32};
+#define PUT_CHANNEL(i)                                                                             \
+    star_write_u16(r.bytes + ((i) - 1) * 4, d.CH##i##_MAX);                                        \
+    star_write_u16(r.bytes + ((i) - 1) * 4 + 2, d.CH##i##_MIN)
+    PUT_CHANNEL(1);
+    PUT_CHANNEL(2);
+    PUT_CHANNEL(3);
+    PUT_CHANNEL(4);
+    PUT_CHANNEL(5);
+    PUT_CHANNEL(6);
+    PUT_CHANNEL(7);
+    PUT_CHANNEL(8);
+#undef PUT_CHANNEL
+    return enqueue(&r);
 }
-void UAV_Write_Param_Remote(_sbus_ch_struct data) {
-    storage_request_t request = {.kind = 1};
-    request.data.remote = data;
-    if (!writes || xQueueSend(writes, &request, 0) != pdPASS)
-        Error_Handler();
+int UAV_Write_Param_Motor(_uav_control_data d) {
+    storage_request_t r = {.kind = 3, .length = 60};
+    const PID_DATA *p[5] = {&d.rollData, &d.pitchData, &d.yawData, &d.rollSpeedData,
+                            &d.pitchSpeedData};
+    for (unsigned i = 0; i < 5; i++) {
+        star_write_f32(r.bytes + i * 12, p[i]->Kp);
+        star_write_f32(r.bytes + i * 12 + 4, p[i]->Ki);
+        star_write_f32(r.bytes + i * 12 + 8, p[i]->Kd);
+    }
+    return enqueue(&r);
 }
-void UAV_Write_Param_Motor(_uav_control_data data) {
-    storage_request_t request = {.kind = 2};
-    request.data.motor = data;
-    if (!writes || xQueueSend(writes, &request, 0) != pdPASS)
-        Error_Handler();
-}
-void Flash_Task_Proc(void const *argument) {
-    storage_request_t request;
-    (void)argument;
+void Flash_Task_Proc(void const *arg) {
+    (void)arg;
+    storage_request_t r;
     for (;;) {
-        if (xQueueReceive(writes, &request, portMAX_DELAY) != pdPASS)
+        if (xQueueReceive(writes, &r, portMAX_DELAY) != pdPASS)
             continue;
+        pj_io_t io = io_for(r.kind);
+        uint32_t sequence = 0;
         storage_lock();
-        if (request.kind == 0)
-            storage_write_IMU(request.data.imu);
-        else if (request.kind == 1)
-            storage_write_Remote(request.data.remote);
-        else if (request.kind == 2)
-            storage_write_Motor(request.data.motor);
+        int status = pj_save(&io, r.kind, 1, r.bytes, r.length, &sequence);
         storage_unlock();
+        taskENTER_CRITICAL();
+        if (status == PJ_OK)
+            storage_sequence[r.kind - 1] = sequence;
+        else
+            rejected_writes++;
+        pending_writes--;
+        taskEXIT_CRITICAL();
     }
 }

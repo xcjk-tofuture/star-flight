@@ -7,10 +7,12 @@
 #include "sbus_proc.h"
 #include "queue.h"
 #include "platform_time.h"
+#include "flight_snapshot.h"
+#include "log_service.h"
 #include <string.h>
 
 extern void UAV_Read_Param_Remote(_sbus_ch_struct *channel_data);
-extern void UAV_Write_Param_Remote(_sbus_ch_struct channe_data);
+extern int UAV_Write_Param_Remote(_sbus_ch_struct channe_data);
 extern UART_HandleTypeDef huart6;
 extern UART_HandleTypeDef huart3;
 extern u8 SbusRxBuf[100];
@@ -40,7 +42,16 @@ void sbus_raw_snapshot(_sbus_ch_struct *out) {
     taskEXIT_CRITICAL();
 }
 
+static int remote_parameters_valid(void) {
+#define RANGE_OK(i)                                                                                \
+    (SBUS_CH.CH##i##_MAX <= 2047 && SBUS_CH.CH##i##_MAX > SBUS_CH.CH##i##_MIN &&                   \
+     SBUS_CH.CH##i##_MAX - SBUS_CH.CH##i##_MIN >= 100)
+    return RANGE_OK(1) && RANGE_OK(2) && RANGE_OK(3) && RANGE_OK(4) && RANGE_OK(5) && RANGE_OK(6) &&
+           RANGE_OK(7) && RANGE_OK(8);
+#undef RANGE_OK
+}
 static u8 remoteCaliFlag = 0;
+
 static u8 remoteCaliSaveFlashFlag = 0;
 static uint8_t calibration_requests;
 void sbus_request_calibration(uint8_t save) {
@@ -59,9 +70,28 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
         request = calibration_requests;
         calibration_requests = 0;
         taskEXIT_CRITICAL();
+        flight_snapshot_t flight;
+        flight_snapshot_read(&flight);
+        if (request && flight.state != 0) {
+            uav_logf("WARN", "SBUS", "calibration rejected: flight_state=%u", (unsigned)flight.state);
+            request = 0;
+        }
         if (request & 1u) {
+
             remoteCaliFlag = 1;
             remoteCaliSaveFlashFlag = 0;
+#define RESET_RANGE(i)                                                                             \
+    SBUS_CH.CH##i##_MIN = 2047;                                                                    \
+    SBUS_CH.CH##i##_MAX = 0
+            RESET_RANGE(1);
+            RESET_RANGE(2);
+            RESET_RANGE(3);
+            RESET_RANGE(4);
+            RESET_RANGE(5);
+            RESET_RANGE(6);
+            RESET_RANGE(7);
+            RESET_RANGE(8);
+#undef RESET_RANGE
         }
         if (request & 2u)
             remoteCaliSaveFlashFlag = 1;
@@ -77,7 +107,7 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
         }
         if (!frame_seen || (uint32_t)(platform_millis() - last_frame_ms) > 100)
             SBUS_CH.Connect_State = 0;
-        if (SBUS_CH.Connect_State && !remoteCaliFlag) {
+        if (SBUS_CH.Connect_State && !remoteCaliFlag && remote_parameters_valid()) {
             _sbus_ch_cal_struct next = {0};
             next.CAL_CH1 =
                 (uint16_t)Sbus_To_Range(SBUS_CH.CH1, 1000, 2000, SBUS_CH.CH1_MIN, SBUS_CH.CH1_MAX);
@@ -103,7 +133,7 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
             taskENTER_CRITICAL();
             CAL_SBUS_CH.Connect_State = 0;
             taskEXIT_CRITICAL();
-            if (remoteCaliFlag)
+            if (remoteCaliFlag && SBUS_CH.Connect_State)
                 Remote_Channel_Calibration();
         }
         taskENTER_CRITICAL();
@@ -138,8 +168,10 @@ void Remote_Channel_Calibration() {
     SBUS_CH.CH8_MAX = SBUS_CH.CH8 > SBUS_CH.CH8_MAX ? SBUS_CH.CH8 : SBUS_CH.CH8_MAX;
 
     if (remoteCaliSaveFlashFlag) {
-        remoteCaliFlag = 0;
-        UAV_Write_Param_Remote(SBUS_CH);
+        if (remote_parameters_valid() && UAV_Write_Param_Remote(SBUS_CH) == 0) {
+            remoteCaliFlag = 0;
+            remoteCaliSaveFlashFlag = 0;
+        }
     }
 }
 

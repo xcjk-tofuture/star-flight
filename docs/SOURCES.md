@@ -13,3 +13,4 @@
 - GNU 启动汇编：[ST CMSIS Device F4 v2.6.8](https://github.com/STMicroelectronics/cmsis-device-f4/tree/v2.6.8/Source/Templates/gcc)，未升级原 HAL。
 - ARM GNU 13.3.Rel1：Windows 包 SHA256 `e46fda043c0ce83582bc8db4b3ef85f77f4beb7333344c2f4193c17e1167a095`；CI Linux 包 SHA256 `95c011cee430e64dd6087c75c800f04b9c49832cc1000127a92a97f9c8d83af4`。
 - xPack OpenOCD 0.12.0-7：Windows 包 SHA256 `6bfd3c97135aafef8affc9af1acf34fd0e2b9ca26044506f6abd7f95b7630052`。
+- CI 依赖与固定提交见 `.github/workflows/firmware.yml`。

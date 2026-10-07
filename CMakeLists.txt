@@ -5,6 +5,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(cmake/sources.cmake)
 add_executable(xingxuan_uav ${FIRMWARE_SOURCES})
 set_target_properties(xingxuan_uav PROPERTIES SUFFIX ".elf")
+set_property(TARGET xingxuan_uav APPEND PROPERTY LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/firmware/boards/stm32/firmware.ld)
 target_include_directories(xingxuan_uav PRIVATE ${FIRMWARE_INCLUDES})
 target_compile_definitions(xingxuan_uav PRIVATE USE_HAL_DRIVER STM32F407xx)
 target_compile_options(xingxuan_uav PRIVATE -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard

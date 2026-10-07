@@ -7,7 +7,7 @@
 static const char *const titles[] = {"", "飞行总览", "三维姿态", "趋势曲线", "传感数据", "遥控通道", "光流测距", "系统诊断"};
 enum { MENU_CALIBRATION = 100, MENU_HELP, MENU_BACK, MENU_CONFIRM, MENU_CANCEL,
        MENU_REMOTE_START, MENU_REMOTE_SAVE, MENU_MAG_START };
-enum { MESSAGE_NONE, MESSAGE_NO_RC, MESSAGE_FLASH, MESSAGE_MAG, MESSAGE_IMU };
+enum { MESSAGE_NONE, MESSAGE_NO_RC, MESSAGE_FLASH, MESSAGE_MAG, MESSAGE_IMU, MESSAGE_STATE };
 static const gui_menu_item_t root_items[] = {
     {"飞行总览", 1}, {"三维姿态", 2}, {"趋势曲线", 3}, {"传感数据", 4},
     {"遥控通道", 5}, {"光流测距", 6}, {"系统诊断", 7},
@@ -117,7 +117,7 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
         if (action == MENU_MAG_START && m->mag_calibrating) {
             gui_dashboard_set_page(d, GUI_PAGE_MAG_CAL); return GUI_COMMAND_NONE;
         }
-        d->message = !m->flash_ok ? MESSAGE_FLASH
+        d->message = m->state != 0 ? MESSAGE_STATE : !m->flash_ok ? MESSAGE_FLASH
                      : action == MENU_REMOTE_START && !m->rc_raw_connected ? MESSAGE_NO_RC
                      : action == MENU_MAG_START && !m->mag_ok ? MESSAGE_MAG
                      : action == MENU_MAG_START && (!m->attitude_valid || m->imu_calibrating) ? MESSAGE_IMU : MESSAGE_NONE;
@@ -129,6 +129,7 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
     } else if (d->screen == GUI_SCREEN_CONFIRM) {
         if (action == MENU_CANCEL) { open_calibration(d, m); return GUI_COMMAND_NONE; }
         gui_command_t command = (gui_command_t)d->confirm_command;
+        if (m->state != 0) { d->message = MESSAGE_STATE; d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE; }
         if (!m->flash_ok) { d->message = MESSAGE_FLASH; d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE; }
         if (command == GUI_COMMAND_REMOTE_START && !m->rc_raw_connected) {
             d->message = MESSAGE_NO_RC; d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE;
@@ -353,10 +354,12 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
     }
     if (d->screen == GUI_SCREEN_MESSAGE) {
         header(c, "暂不可用", "返回");
-        const char *reason = d->message == MESSAGE_FLASH ? "闪存异常"
+        const char *reason = d->message == MESSAGE_STATE ? "等待锁定"
+                             : d->message == MESSAGE_FLASH ? "闪存异常"
                              : d->message == MESSAGE_NO_RC ? "遥控未连接"
                              : d->message == MESSAGE_MAG ? "磁场未就绪" : "等待校准";
-        const char *detail = d->message == MESSAGE_FLASH ? "校准数据无法保存"
+        const char *detail = d->message == MESSAGE_STATE ? "请先锁定飞控"
+                             : d->message == MESSAGE_FLASH ? "校准数据无法保存"
                              : d->message == MESSAGE_NO_RC ? "请先连接接收机"
                              : d->message == MESSAGE_MAG ? "请等待器件初始化" : "请静置等待校准";
         gui_text(c, (GUI_WIDTH-gui_text_width(c, reason, GUI_FONT_CN16))/2, 20, reason, GUI_FONT_CN16);

@@ -34,3 +34,10 @@ void flight_attitude_invalidate(void) {
     snapshot.valid = 0;
     taskEXIT_CRITICAL();
 }
+
+void flight_fault_publish(uint8_t reason, uint32_t transitions) {
+    taskENTER_CRITICAL();
+    snapshot.fault = reason;
+    snapshot.transitions = transitions;
+    taskEXIT_CRITICAL();
+}

@@ -1,0 +1,52 @@
+name: Firmware and host tests
+on:
+  push:
+    branches: [dev, master]
+  pull_request:
+    branches: [dev, master]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: python3 tools/validate.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: host-${{ github.sha }}
+          path: build/reports/
+          if-no-files-found: error
+  firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        preset: [debug, release]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: |
+          python3 tools/install_arm_gcc.py "$RUNNER_TEMP/arm-gcc"
+          echo "ARM_GCC_PATH=$RUNNER_TEMP/arm-gcc/arm-gnu-toolchain-13.3.rel1-x86_64-arm-none-eabi" >> "$GITHUB_ENV"
+      - run: python3 tools/validate.py --preset ${{ matrix.preset }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: firmware-${{ matrix.preset }}-${{ github.sha }}
+          path: |
+            build/${{ matrix.preset }}/*.elf
+            build/${{ matrix.preset }}/*.bin
+            build/${{ matrix.preset }}/*.hex
+            build/${{ matrix.preset }}/*.map
+            build/reports/
+          if-no-files-found: error

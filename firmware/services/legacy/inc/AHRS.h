@@ -104,18 +104,9 @@ void IMU_Update(acc_raw_data_t acc, gyro_raw_data_t gyro, mag_raw_data_t mag, _i
 int AHRS_Mahony_Update(_imuData_all imu, _ahrs_data *attitude);
 void AHRS_Kalman_Update(_imuData_all imu, _ahrs_data *attitude);
 
-void Sensor_Calibration(_imuData_all *imu);
-
 void Mag_Zero_Offset_Calibration(_imuData_all *imu);
 
-void Simple_Zero_Offset_Calibration(_imuData_all *imu, Vector3f_t *offset); // 简单零偏校准
-
 void SensorData_Task_Proc(void const *argument);
-
-void LMS_Fitting(float raw[6][3], Vector3f_t *offset, Vector3f_t *scale); // 基于求导的椭球拟合函数
-
-void Acc_LMS_Calibration(_imuData_all *imu, Vector3f_t *offset,
-                         Vector3f_t *scale); // 加速度计椭球拟合
 
 void IMU_Temperature_Control_Init(); // IMU恒温控制初始化
 

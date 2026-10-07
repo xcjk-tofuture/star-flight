@@ -9,6 +9,9 @@
 #include "uav_actuator.h"
 #include "flight_snapshot.h"
 #include "platform_time.h"
+#include "flight_machine.h"
+#include "flash_proc.h"
+#include <string.h>
 
 static _sbus_ch_cal_struct control_channels;
 static _ahrs_data control_attitude;
@@ -18,11 +21,10 @@ static _uav_control_data uav_control_data;
 osThreadId MotorTaskHandle;
 
 // 传感器校准标准位
-// 5通道 1000是锁定  内8打杆后1500是飞行（自稳）2000是飞行（定高）  8通道 1000是 正常 1500是紧急停机
+// CH5 低档用于锁定手势；高档仅选择自稳。CH8 高档立即急停。
 
 static u8 uavSafeFlag = LOCKED;
-u8 uavAutoTakeOffFlag = 0;
-u32 unlockCount = 0;
+static flight_machine_t machine;
 
 void Motor_Task_Proc(void const *argument) {
     uav_actuator_write(0, 1000);
@@ -30,8 +32,10 @@ void Motor_Task_Proc(void const *argument) {
     uav_actuator_write(2, 1000);
     uav_actuator_write(3, 1000);
     UAV_Control_Init(&uav_control_data);
+    flight_machine_init(&machine);
     TickType_t wake;
     osDelay(5000);
+    UAV_Read_Param_Motor(&uav_control_data);
     wake = xTaskGetTickCount();
     for (;;) {
         flight_snapshot_t sensed;
@@ -43,10 +47,36 @@ void Motor_Task_Proc(void const *argument) {
         control_attitude.rollSpeed = sensed.roll_rate_radps * 57.29577951f;
         control_attitude.pitchSpeed = sensed.pitch_rate_radps * 57.29577951f;
         control_attitude.yawSpeed = sensed.yaw_rate_radps * 57.29577951f;
-        if (uavSafeFlag != LOCKED &&
-            (!sensed.valid || (uint32_t)(platform_millis() - sensed.attitude_ms) > 100))
-            uavSafeFlag = EMERGENCY;
-        if (control_channels.Connect_State == 1) {
+        flight_inputs_t inputs = {0};
+        TickType_t tick = xTaskGetTickCount();
+        inputs.timing_fault = (TickType_t)(tick - wake) > pdMS_TO_TICKS(10);
+        if (inputs.timing_fault)
+            wake = tick;
+        inputs.now_ms = platform_millis();
+        inputs.attitude_ms = sensed.attitude_ms;
+        inputs.connected = control_channels.Connect_State;
+        inputs.attitude_valid = sensed.valid;
+        inputs.calibrating = sbus_calibration_active() || sensor_imu_calibrating() ||
+                             sensors_mag_calibration_active();
+        inputs.storage_busy = uav_storage_busy();
+        inputs.channels[0] = control_channels.CAL_CH1;
+        inputs.channels[1] = control_channels.CAL_CH2;
+        inputs.channels[2] = control_channels.CAL_CH3;
+        inputs.channels[3] = control_channels.CAL_CH4;
+        inputs.channels[4] = control_channels.CAL_CH5;
+        inputs.channels[5] = control_channels.CAL_CH6;
+        inputs.channels[6] = control_channels.CAL_CH7;
+        inputs.channels[7] = control_channels.CAL_CH8;
+        flight_machine_step(&machine, &inputs);
+        uavSafeFlag = machine.state;
+        if (uavSafeFlag != FLYING) {
+            memset(&uav_control_data.rollPid, 0, sizeof(PID));
+            memset(&uav_control_data.pitchPid, 0, sizeof(PID));
+            memset(&uav_control_data.yawPid, 0, sizeof(PID));
+            memset(&uav_control_data.rollSpeedPid, 0, sizeof(PID));
+            memset(&uav_control_data.pitchSpeedPid, 0, sizeof(PID));
+        }
+        {
             // printf("State :%d\r\n", uavSafeFlag);
             switch (uavSafeFlag) {
             case LOCKED:
@@ -111,28 +141,11 @@ void Motor_Task_Proc(void const *argument) {
                 break;
             }
 
-            if (!sbus_calibration_active() && sensed.valid) {
+            if (uavSafeFlag == LOCKED && !inputs.calibrating && !inputs.storage_busy &&
+                inputs.connected && inputs.attitude_valid)
                 mag_cail_proc();
-                aux_channel_proc();
-                if (lock_unlock_proc()) {
-                    if (uavSafeFlag == LOCKED && unlockCount >= 200) {
-                        uavSafeFlag = UNLOCKED;
-                        unlockCount = 0;
-                    } else if (uavSafeFlag == UNLOCKED && unlockCount >= 200) {
-                        uavSafeFlag = LOCKED;
-                        unlockCount = 0;
-                    }
-                }
-            }
-
-        } else {
-            uavSafeFlag = EMERGENCY;
-            uav_actuator_write(0, 1000);
-            uav_actuator_write(1, 1000);
-            uav_actuator_write(2, 1000);
-            uav_actuator_write(3, 1000);
         }
-
+        flight_fault_publish(machine.reason, machine.transitions);
         flight_state_publish(uavSafeFlag);
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(5));
     }
@@ -173,37 +186,6 @@ void UAV_Control_Init(_uav_control_data *uav_data) {
     uav_data->pitchSpeedData.ErrorMax = 100;
     uav_data->pitchSpeedData.DifferentialMax = 200;
     uav_data->pitchSpeedData.IntegrateMax = 1000;
-}
-
-void aux_channel_proc() // 辅助通道处理
-{
-    if (control_channels.CAL_CH5 < 2100 && control_channels.CAL_CH5 > 1400 &&
-        uavSafeFlag == UNLOCKED) {
-        uavSafeFlag = FLYING;
-    } else if (control_channels.CAL_CH5 < 1100 && control_channels.CAL_CH5 > 900 &&
-               uavSafeFlag == FLYING) {
-        uavSafeFlag = UNLOCKED;
-    }
-
-    if (control_channels.CAL_CH8 < 2100 && control_channels.CAL_CH8 > 1400) // 急停
-    {
-        uavSafeFlag = LOCKED;
-    }
-}
-
-u8 lock_unlock_proc() // 上锁解锁处理
-{
-    if (control_channels.CAL_CH1 < 1050 && control_channels.CAL_CH1 > 990 &&
-        control_channels.CAL_CH2 < 1050 && control_channels.CAL_CH2 > 990 &&
-        control_channels.CAL_CH3 < 1050 && control_channels.CAL_CH3 > 990 &&
-        control_channels.CAL_CH4 < 2010 && control_channels.CAL_CH4 > 1950) {
-
-        unlockCount++;
-        return 1;
-    } else {
-        unlockCount = 0;
-        return 0;
-    }
 }
 
 void mag_cail_proc() // 上锁解锁处理
