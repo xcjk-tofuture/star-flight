@@ -2,49 +2,38 @@
 #include "display_service.h"
 #include "key_proc.h"
 
-#include "sbus_proc.h"
+#include "platform_time.h"
 
 u8 keyUp, keyDown, keyOld, keyValue;
 
 osThreadId KeyTaskHandle;
 
 void Key_Task_Proc(void const *argument) {
-
-    u32 keyCount = 0;
-    u8 keyLongFlag = 0;
-    /* USER CODE BEGIN Key_Task_Proc */
-    /* Infinite loop */
+    (void)argument;
+    uint8_t candidate = 0, stable = 0, samples = 0;
+    uint32_t pressed_ms = 0;
     for (;;) {
-
-        keyValue = Key_Scan();
-        keyDown = keyValue & (keyOld ^ keyValue);
-        keyUp = ~keyValue & (keyOld ^ keyValue);
-        keyOld = keyValue;
-
-        if (keyDown == 2)
-            keyCount = 0;
-        if (keyValue == 2)
-            keyCount++;
-        if (keyUp == 2 && keyCount >= 100) { // 长按逻辑处理
-            if (sbus_calibration_active()) {
-                uav_display_request_page(1);
-                sbus_request_calibration(1);
+        keyDown = keyUp = 0;
+        uint8_t raw = Key_Scan();
+        if (raw != candidate) { candidate = raw; samples = 1; }
+        else if (samples < 4) samples++;
+        if (samples == 4 && candidate != stable) {
+            uint8_t previous = stable;
+            uint32_t now = platform_millis();
+            stable = candidate;
+            keyValue = stable;
+            keyDown = stable & (previous ^ stable);
+            keyUp = (uint8_t)(~stable) & (previous ^ stable);
+            keyOld = stable;
+            if (previous) {
+                int long_press = (uint32_t)(now-pressed_ms) >= 600u;
+                uav_display_input(previous == 1 ? (long_press ? UAV_DISPLAY_BACK : UAV_DISPLAY_NEXT)
+                                   : (long_press ? UAV_DISPLAY_CAL_MENU : UAV_DISPLAY_CONFIRM));
             }
-
-            if (!sbus_calibration_active()) {
-                uav_display_request_page(19);
-                sbus_request_calibration(0); // 校准遥控器
-            }
-
-            keyCount = 0;
-        }
-
-        if (keyDown == 1) {
-            uav_display_next_page();
+            if (stable) pressed_ms = now;
         }
         osDelay(5);
     }
-    /* USER CODE END Key_Task_Proc */
 }
 
 u8 Key_Scan(void) {

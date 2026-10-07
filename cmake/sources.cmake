@@ -88,7 +88,7 @@ set(FIRMWARE_SOURCES
   firmware/services/legacy/src/key_proc.c
   firmware/services/legacy/src/led_proc.c
   firmware/app/tasks/flight_control_task.c
-  firmware/services/legacy/src/oled_proc.c
+  firmware/app/tasks/display_task.c
   firmware/services/legacy/src/oledfont.c
   firmware/services/legacy/src/sbus_proc.c
   firmware/services/protocol/star_dispatch.c
@@ -118,3 +118,4 @@ set(FIRMWARE_INCLUDES
   firmware/drivers/sensors/inc
   firmware/services/protocol
 )
+include(${CMAKE_CURRENT_LIST_DIR}/gui.cmake)

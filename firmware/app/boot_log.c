@@ -10,6 +10,7 @@
 #include "flight_snapshot.h"
 #include "sensor_port.h"
 #include "serial_port.h"
+#include "display_service.h"
 #include <math.h>
 
 extern uint8_t SensorError, Bmi088Init_Flag, AK8975Flag, SPL06Flag;
@@ -183,6 +184,13 @@ void app_boot_log_health(void) {
              (unsigned long)tx.frames_ok, (unsigned long)tx.start_errors,
              (unsigned long)tx.timeouts, (unsigned long)tx.dma_errors,
              (unsigned long)tx.last_hal_status);
+    uav_display_stats_t display;
+    uav_display_get_stats(&display);
+    uav_logf(display.errors ? "WARN" : "INFO", "GUI",
+             "frames=%lu spans=%lu bytes=%lu errors=%lu last_bytes=%u frame_ms=%u",
+             (unsigned long)display.frames, (unsigned long)display.spans,
+             (unsigned long)display.bytes, (unsigned long)display.errors,
+             (unsigned)display.last_bytes, (unsigned)display.render_ms);
     uav_logf("INFO", "STACK", "min_free_words OLED=%lu PC=%lu Sensor=%lu",
              stack_free_words(OLEDTaskHandle), stack_free_words(PCTaskHandle),
              stack_free_words(SensorDataTaskHandle));
