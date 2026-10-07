@@ -6,7 +6,37 @@
 #include "cmsis_os.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "log_service.h"
+#include <string.h>
+static uint8_t observed_ids[4], observed_mask;
+static unsigned selected_device = 4;
+static uint8_t transaction_command, transaction_id, transaction_has_id;
+static uint16_t transaction_position;
+/* Observe the driver's real read rather than inserting a second ID request.
+ * BMI088 accel has one dummy byte; the other three checks do not. */
+static void observe_byte(uint8_t tx, uint8_t rx, int received) {
+    if (selected_device >= 4)
+        return;
+    if (!transaction_position)
+        transaction_command = tx;
+    else if (received && transaction_command == (selected_device == 3 ? 0x8du : 0x80u) &&
+             transaction_position == (selected_device == 0 ? 2u : 1u)) {
+        transaction_id = rx;
+        transaction_has_id = 1;
+    }
+    transaction_position++;
+}
+void uav_sensor_id_snapshot(uint8_t ids[4], uint8_t *seen) {
+    if (!ids || !seen)
+        return;
+    taskENTER_CRITICAL();
+    memcpy(ids, observed_ids, sizeof(observed_ids));
+    *seen = observed_mask;
+    taskEXIT_CRITICAL();
+}
 void uav_sensor_select(unsigned device, int selected) {
+    if (device >= 4)
+        return;
     GPIO_TypeDef *port = device == 0   ? BMI088_ACC_GPIOx
                          : device == 1 ? BMI088_GYRO_GPIOx
                          : device == 2 ? SPI2_CS3_GPIO_Port
@@ -15,20 +45,45 @@ void uav_sensor_select(unsigned device, int selected) {
                    : device == 1 ? BMI088_GYRO_GPIOp
                    : device == 2 ? SPI2_CS3_Pin
                                  : SPI2_CS2_Pin;
+    if (selected) {
+        selected_device = device;
+        transaction_position = 0;
+        transaction_has_id = 0;
+    }
     HAL_GPIO_WritePin(port, pin, selected ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    if (!selected && selected_device == device) {
+        selected_device = 4;
+        if (transaction_has_id) {
+            static const char *const names[] = {"BMI088_ACC", "BMI088_GYRO", "AK8975", "SPL06"};
+            static const char *const pins[] = {"PE15", "PD8", "PD10", "PD9"};
+            static const uint8_t expected[] = {0x1e, 0x0f, 0x48, 0x10};
+            int changed = !(observed_mask & (1u << device)) || observed_ids[device] != transaction_id;
+            observed_ids[device] = transaction_id;
+            observed_mask |= (uint8_t)(1u << device);
+            if (changed)
+                uav_logf(transaction_id == expected[device] ? "INFO" : "WARN", "SENSOR_ID",
+                         "%s ID=0x%02x expected=0x%02x CS=%s transfer=OK", names[device],
+                         (unsigned)transaction_id, (unsigned)expected[device], pins[device]);
+        }
+    }
 }
 void uav_sensor_tx(const uint8_t *bytes, uint16_t size) {
     if (HAL_SPI_Transmit(&hspi2, (uint8_t *)bytes, size, 2) != HAL_OK)
         Error_Handler();
+    for (uint16_t i = 0; i < size; i++)
+        observe_byte(bytes[i], 0, 0);
 }
 void uav_sensor_rx(uint8_t *bytes, uint16_t size) {
     if (HAL_SPI_Receive(&hspi2, bytes, size, 2) != HAL_OK)
         Error_Handler();
+    for (uint16_t i = 0; i < size; i++)
+        observe_byte(0xff, bytes[i], 1);
 }
 uint8_t uav_sensor_byte(uint8_t byte) {
     uint8_t response;
     if (HAL_SPI_TransmitReceive(&hspi2, &byte, &response, 1, 2) != HAL_OK)
         Error_Handler();
+    observe_byte(byte, response, 1);
     return response;
 }
 void uav_sensor_delay_ms(uint32_t ms) {

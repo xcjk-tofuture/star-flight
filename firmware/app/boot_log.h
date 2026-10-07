@@ -3,6 +3,7 @@
 #include <stdint.h>
 void app_boot_log_hal(void);
 void app_boot_log_clocks(void);
+void app_boot_spi_idle(void);
 void app_boot_log_peripherals(void);
 void app_boot_log_flash(int result);
 int app_boot_flash_ready(void);

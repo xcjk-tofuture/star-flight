@@ -8,6 +8,7 @@
 #include "w25qxx_device.h"
 #include "AHRS.h"
 #include "flight_snapshot.h"
+#include "sensor_port.h"
 #include "serial_port.h"
 #include <math.h>
 
@@ -46,6 +47,25 @@ void app_boot_log_clocks(void) {
              (unsigned long)(pll & 0x3fu), (unsigned long)((pll >> 6) & 0x1ffu),
              (unsigned long)((((pll >> 16) & 3u) + 1u) * 2u),
              (unsigned long)((pll >> 24) & 15u), (unsigned long)RCC->CR);
+}
+static unsigned spi2_cs_levels(void) {
+    return (HAL_GPIO_ReadPin(SPI2_CS0_GPIO_Port, SPI2_CS0_Pin) == GPIO_PIN_SET ? 1u : 0u) |
+           (HAL_GPIO_ReadPin(SPI2_CS1_GPIO_Port, SPI2_CS1_Pin) == GPIO_PIN_SET ? 2u : 0u) |
+           (HAL_GPIO_ReadPin(SPI2_CS3_GPIO_Port, SPI2_CS3_Pin) == GPIO_PIN_SET ? 4u : 0u) |
+           (HAL_GPIO_ReadPin(SPI2_CS2_GPIO_Port, SPI2_CS2_Pin) == GPIO_PIN_SET ? 8u : 0u);
+}
+void app_boot_spi_idle(void) {
+    unsigned before = spi2_cs_levels();
+    /* All active-low selects must be idle before the first device command.
+     * Cube GPIO defaults select all devices; change only application startup. */
+    HAL_GPIO_WritePin(GPIOC, FLASH_CS_Pin | OLED_CS_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SPI2_CS0_GPIO_Port, SPI2_CS0_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOD, SPI2_CS1_Pin | SPI2_CS2_Pin | SPI2_CS3_Pin, GPIO_PIN_SET);
+    uav_logf("INFO", "SPI_CS", "SPI2 high_mask before=0x%x after=0x%x bit0=ACC_PE15 bit1=GYRO_PD8 bit2=MAG_PD10 bit3=BARO_PD9",
+             before, spi2_cs_levels());
+    uav_logf("INFO", "SPI_CS", "SPI1 FLASH_PC0=%u OLED_PC4=%u idle=HIGH",
+             (unsigned)HAL_GPIO_ReadPin(FLASH_CS_GPIO_Port, FLASH_CS_Pin),
+             (unsigned)HAL_GPIO_ReadPin(OLED_CS_GPIO_Port, OLED_CS_Pin));
 }
 static void uart_parameters(const char *name, UART_HandleTypeDef *uart, const char *pins) {
     unsigned data = uart->Init.WordLength == UART_WORDLENGTH_9B ? 9u : 8u;
@@ -151,6 +171,10 @@ void app_boot_log_health(void) {
     uav_logf(SensorError ? "WARN" : "INFO", "SENSOR", "init_flags BMI088=%u AK8975=%u SPL06=%u error=%u calibrating=%u attitude_valid=%u",
              (unsigned)Bmi088Init_Flag, (unsigned)AK8975Flag, (unsigned)SPL06Flag,
              (unsigned)SensorError, (unsigned)sensor_imu_calibrating(), (unsigned)snapshot.valid);
+    uint8_t ids[4], seen;
+    uav_sensor_id_snapshot(ids, &seen);
+    uav_logf("INFO", "SENSOR_ID", "seen_mask=0x%x ACC=0x%02x GYRO=0x%02x MAG=0x%02x BARO=0x%02x",
+             (unsigned)seen, (unsigned)ids[0], (unsigned)ids[1], (unsigned)ids[2], (unsigned)ids[3]);
     log_sensor_sample();
     serial_port_stats_t tx;
     serial_port_get_stats(&tx);

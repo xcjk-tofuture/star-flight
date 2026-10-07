@@ -4,6 +4,8 @@
 /* SPI2 is exclusively owned by the sampling task. Blocking I/O bounds: 2ms/call.
  * Device index: 0 BMI accel, 1 BMI gyro, 2 magnetometer, 3 pressure. */
 void uav_sensor_select(unsigned device, int selected);
+/* IDs observed during the existing driver transactions; no extra SPI traffic. */
+void uav_sensor_id_snapshot(uint8_t ids[4], uint8_t *seen);
 void uav_sensor_tx(const uint8_t *bytes, uint16_t size);
 void uav_sensor_rx(uint8_t *bytes, uint16_t size);
 uint8_t uav_sensor_byte(uint8_t byte);
