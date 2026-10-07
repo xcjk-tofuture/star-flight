@@ -12,6 +12,7 @@
 #include "serial_port.h"
 #include "log_service.h"
 #include "boot_log.h"
+#include "gui_oled_config.h"
 #include <string.h>
 osThreadId OLEDTaskHandle;
 extern uint8_t Bmi088Init_Flag, AK8975Flag, SPL06Flag;
@@ -119,12 +120,20 @@ void OLED_Task_Proc(void const *argument) {
     (void)argument;
     gui_canvas_init(&canvas); gui_dashboard_init(&dashboard);
     gui_presenter_init(&presenter, gui_display_port_write, NULL);
-    gui_display_port_init();
+    uint8_t configured = gui_display_port_init() == 0, panel_enabled = 0;
+    uint32_t last_init_attempt = platform_millis(), last_repaint = platform_millis();
+    if (!configured) { presenter.stats.errors++; uav_logf("WARN", "OLED", "initialization TX failed; retry pending"); }
     uav_logf("INFO", "GUI", "U8g2 128x64 Chinese_menu=12px rows=3 titles=12px pages=7 target=20Hz history=64@10Hz keys=2");
     TickType_t wake = xTaskGetTickCount();
     uint8_t mag_cal_was_active = 0;
     for (;;) {
         uint32_t begin = platform_millis();
+        if (!configured && (uint32_t)(begin-last_init_attempt) >= 1000u) {
+            configured = gui_display_port_init() == 0;
+            last_init_attempt = platform_millis();
+            gui_presenter_invalidate(&presenter);
+            if (!configured) presenter.stats.errors++;
+        }
         read_model(); process_navigation();
         if (model.mag_calibrating) mag_cal_was_active = 1;
         else if (mag_cal_was_active && dashboard.page == GUI_PAGE_MAG_CAL) {
@@ -132,7 +141,23 @@ void OLED_Task_Proc(void const *argument) {
         }
         gui_dashboard_update(&dashboard, &model);
         gui_dashboard_render(&dashboard, &canvas, &model);
-        gui_present(&presenter, &canvas);
+        if (configured) {
+            /* SPI OLED has no ACK/readback. Periodically reassert mapping and
+             * repaint all pages rather than trusting a stale differential cache. */
+            if (!panel_enabled || presenter.valid_pages != 0xffu ||
+                (uint32_t)(begin-last_repaint) >= GUI_OLED_REPAINT_MS) {
+                if (gui_display_port_reassert() != 0) presenter.stats.errors++;
+                gui_presenter_invalidate(&presenter);
+                last_repaint = begin;
+            }
+            gui_present(&presenter, &canvas);
+            if (!panel_enabled && presenter.valid_pages == 0xffu) {
+                if (gui_display_port_enable() == 0) {
+                    panel_enabled = 1;
+                    uav_logf("INFO", "OLED", "display_on=1 complete_first_frame=1 repaint=2000ms");
+                } else presenter.stats.errors++;
+            }
+        }
         model.render_ms = (uint16_t)(platform_millis() - begin);
         taskENTER_CRITICAL();
         published_stats.frames = presenter.stats.frames;

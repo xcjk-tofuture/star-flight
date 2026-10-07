@@ -52,7 +52,6 @@ static void header(gui_canvas_t *c, const char *title, const char *badge) {
     gui_line(c, 0, 14, GUI_WIDTH-1, 14);
 }
 static void footer(gui_canvas_t *c, const gui_dashboard_t *d) {
-    gui_line(c, 0, 57, GUI_WIDTH-1, 57);
     const char *hint = d->page == GUI_PAGE_REMOTE_CAL ? "2VIEW 2HOLD CAL 1HOLD BACK"
                       : d->page > GUI_PAGE_COUNT ? "1HOLD MENU 2HOLD CAL" : "1PAGE 2VIEW 1HOLD MENU";
     gui_text(c, 1, 58, hint, GUI_FONT_TINY);
@@ -362,7 +361,7 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
                              : d->message == MESSAGE_MAG ? "请等待器件初始化" : "请静置等待校准";
         gui_text(c, (GUI_WIDTH-gui_text_width(c, reason, GUI_FONT_CN16))/2, 20, reason, GUI_FONT_CN16);
         gui_text(c, (GUI_WIDTH-gui_text_width(c, detail, GUI_FONT_CN12))/2, 41, detail, GUI_FONT_CN12);
-        gui_line(c, 0, 57, 127, 57); gui_text(c, 1, 58, "1/2 BACK  HOLD1 MENU", GUI_FONT_TINY);
+        gui_text(c, 1, 58, "1/2 BACK  HOLD1 MENU", GUI_FONT_TINY);
         return;
     }
     if (d->screen == GUI_SCREEN_HELP) {
@@ -372,7 +371,7 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
             {"页面1：翻页", "页面2：切视图", "2长按：校准菜单"}
         };
         for (unsigned i = 0; i < 3; i++) gui_text(c, 4, 16+(int)i*13, help[d->help_page][i], GUI_FONT_CN12);
-        gui_line(c, 0, 57, 127, 57); gui_text(c, 1, 58, "1 NEXT 2 BACK HOLD=600ms", GUI_FONT_TINY);
+        gui_text(c, 1, 58, "1 NEXT 2 BACK HOLD=600ms", GUI_FONT_TINY);
         return;
     }
     const char *title = d->page == GUI_PAGE_REMOTE_CAL ? "遥控校准"

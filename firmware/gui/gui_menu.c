@@ -51,6 +51,5 @@ void gui_menu_render(gui_menu_t *m, gui_canvas_t *c, const char *title,
     if (thumb_height < 4) thumb_height = 4;
     int thumb_y = 17 + (m->count > 1 ? m->selected*(38-thumb_height)/(m->count-1) : 0);
     gui_box(c, 123, thumb_y, 3, thumb_height, 1);
-    gui_line(c, 0, 57, 127, 57);
     gui_text(c, 1, 58, "1 NEXT  2 OK  HOLD1 BACK", GUI_FONT_TINY);
 }

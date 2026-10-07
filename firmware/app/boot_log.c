@@ -11,6 +11,7 @@
 #include "sensor_port.h"
 #include "serial_port.h"
 #include "display_service.h"
+#include "gui_display_port.h"
 #include <math.h>
 
 extern uint8_t SensorError, Bmi088Init_Flag, AK8975Flag, SPL06Flag;
@@ -191,6 +192,13 @@ void app_boot_log_health(void) {
              (unsigned long)display.frames, (unsigned long)display.spans,
              (unsigned long)display.bytes, (unsigned long)display.errors,
              (unsigned)display.last_bytes, (unsigned)display.render_ms);
+    gui_display_port_stats_t oled;
+    gui_display_port_get_stats(&oled);
+    uav_logf(oled.dma_errors || oled.timeouts ? "WARN" : "INFO", "OLED",
+             "configured=%u on=%u init=%lu SCK=%luHz dma_errors=%lu timeouts=%lu last_hal=%lu",
+             (unsigned)oled.configured, (unsigned)oled.enabled, (unsigned long)oled.initializations,
+             (unsigned long)oled.clock_hz, (unsigned long)oled.dma_errors,
+             (unsigned long)oled.timeouts, (unsigned long)oled.last_hal_status);
     uav_logf("INFO", "STACK", "min_free_words OLED=%lu PC=%lu Sensor=%lu",
              stack_free_words(OLEDTaskHandle), stack_free_words(PCTaskHandle),
              stack_free_words(SensorDataTaskHandle));
