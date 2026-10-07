@@ -48,7 +48,8 @@ void app_tasks_init(void) {
     SbusUart6TaskHandle = osThreadCreate(osThread(Sbus), NULL);
     if (!SbusUart6TaskHandle)
         Error_Handler();
-    osThreadDef(OLED, OLED_Task_Proc, osPriorityIdle, 0, 256);
+    /* Keep the known working stack budget for rendering and the FPU context. */
+    osThreadDef(OLED, OLED_Task_Proc, osPriorityIdle, 0, 1024);
     OLEDTaskHandle = osThreadCreate(osThread(OLED), NULL);
     if (!OLEDTaskHandle)
         Error_Handler();
