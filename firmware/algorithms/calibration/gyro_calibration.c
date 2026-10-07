@@ -2,8 +2,9 @@
 #include <math.h>
 #include <string.h>
 
-static void reset_window(uav_gyro_calibration_t *s) {
+static void reset_window(uav_gyro_calibration_t *s, uint8_t reason) {
     s->count = 0;
+    s->reject_reason = reason;
     memset(s->mean, 0, sizeof s->mean);
     memset(s->m2, 0, sizeof s->m2);
 }
@@ -24,15 +25,20 @@ int uav_gyro_calibration_feed(uav_gyro_calibration_t *s, const float g[3],
                               const float a[3], float bias[3]) {
     if (!s || !g || !a || !bias || s->config.samples < 2)
         return UAV_GYRO_REJECTED;
+    if (s->failed)
+        return UAV_GYRO_FAILED;
     if (s->ready) {
         memcpy(bias, s->mean, 3 * sizeof(float));
         return UAV_GYRO_READY;
     }
     float norm2 = 0;
     for (unsigned i = 0; i < 3; i++) {
-        if (!isfinite(g[i]) || !isfinite(a[i]) ||
-            fabsf(g[i]) > s->config.max_rate_rad_s) {
-            reset_window(s);
+        if (!isfinite(g[i]) || !isfinite(a[i])) {
+            reset_window(s, UAV_GYRO_REASON_INVALID);
+            return UAV_GYRO_REJECTED;
+        }
+        if (fabsf(g[i]) > s->config.max_rate_rad_s) {
+            reset_window(s, UAV_GYRO_REASON_RATE);
             return UAV_GYRO_REJECTED;
         }
         norm2 += a[i] * a[i];
@@ -40,7 +46,7 @@ int uav_gyro_calibration_feed(uav_gyro_calibration_t *s, const float g[3],
     if (!isfinite(norm2) ||
         fabsf(sqrtf(norm2) - s->config.gravity_m_s2) >
             s->config.acceleration_tolerance_m_s2) {
-        reset_window(s);
+        reset_window(s, UAV_GYRO_REASON_GRAVITY);
         return UAV_GYRO_REJECTED;
     }
     s->count++;
@@ -56,11 +62,20 @@ int uav_gyro_calibration_feed(uav_gyro_calibration_t *s, const float g[3],
         float limit = i < 3 ? s->config.max_rate_std_rad_s :
                              s->config.max_acceleration_std_m_s2;
         if (s->m2[i] / (s->count - 1) > limit * limit) {
-            reset_window(s);
+            reset_window(s, UAV_GYRO_REASON_VARIANCE);
             return UAV_GYRO_REJECTED;
         }
     }
     s->ready = 1;
     memcpy(bias, s->mean, 3 * sizeof(float));
     return UAV_GYRO_READY;
+}
+
+int uav_gyro_calibration_expire(uav_gyro_calibration_t *s, uint32_t elapsed_ms,
+                              uint32_t timeout_ms) {
+    if (!s || !timeout_ms || s->ready)
+        return 0;
+    if (elapsed_ms >= timeout_ms)
+        s->failed = 1;
+    return s->failed != 0;
 }

@@ -50,6 +50,13 @@ int main(void) {
     uav_gyro_calibration_config_t bad = config;
     bad.max_rate_rad_s = NAN;
     assert(uav_gyro_calibration_init(&s, &bad) == -1);
+    assert(uav_gyro_calibration_init(&s, &config) == 0);
+    assert(!uav_gyro_calibration_expire(&s,29999,30000));
+    assert(uav_gyro_calibration_expire(&s,30000,30000));
+    g[0]=0; a[0]=0; a[2]=9.80665f;
+    assert(uav_gyro_calibration_feed(&s,g,a,bias)==UAV_GYRO_FAILED);
+    assert(!s.ready && s.failed);
+    assert(uav_gyro_calibration_init(&s,&config)==0 && !s.failed);
     puts("gyro calibration: signed motion, contiguous windows, variance, invalid inputs PASS");
     return 0;
 }
