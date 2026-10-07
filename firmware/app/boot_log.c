@@ -12,13 +12,13 @@
 #include "serial_port.h"
 #include "display_service.h"
 #include "gui_display_port.h"
+#include "flash_proc.h"
 #include <math.h>
 
 extern uint8_t SensorError, Bmi088Init_Flag, AK8975Flag, SPL06Flag;
 extern void *OLEDTaskHandle, *PCTaskHandle, *SensorDataTaskHandle;
 extern char _heap_start, _heap_end, _estack;
-static uint8_t flash_ready;
-int app_boot_flash_ready(void) { return flash_ready; }
+int app_boot_flash_ready(void) { return uav_storage_ready(); }
 
 void app_boot_log_hal(void) {
 #ifdef NDEBUG
@@ -106,12 +106,11 @@ void app_boot_log_peripherals(void) {
              (unsigned long)(uintptr_t)&_heap_end, (unsigned long)configTOTAL_HEAP_SIZE);
 }
 void app_boot_log_flash(int result) {
-    flash_ready = result == 0;
     uint16_t id = W25QXX_ReadID();
-    uav_logf(result ? "WARN" : "INFO", "FLASH", "W25Q32JVSSIQ ID=0x%04x expected=0xEF15 rc=%d CS=PC0",
+    uav_logf(result ? "WARN" : "INFO", "EXT_FLASH", "optional W25Q32JVSSIQ ID=0x%04x expected=0xEF15 rc=%d CS=PC0",
              (unsigned)id, result);
     if (result)
-        uav_logf("WARN", "BOOT", "Flash unavailable; continuing diagnostic boot; parameter storage unresolved");
+        uav_logf("WARN", "BOOT", "External Flash unavailable; calibration parameters use internal Flash");
 }
 void app_boot_log_task(const char *name, void *handle, uint32_t stack_words) {
     uav_logf("INFO", "TASK", "%s handle=0x%08lx priority=%lu stack=%luwords/%luB heap_free=%luB",
@@ -168,6 +167,8 @@ static void log_sensor_sample(void) {
              scaled[6], scaled[7], scaled[8], bad);
 }
 void app_boot_log_health(void) {
+    uav_logf(uav_storage_ready() ? "INFO":"ERROR","STORAGE","backend=INTERNAL ready=%u busy=%u",
+             (unsigned)uav_storage_ready(),(unsigned)uav_storage_busy());
     flight_snapshot_t snapshot;
     flight_snapshot_read(&snapshot);
     uav_logf(SensorError ? "WARN" : "INFO", "SENSOR", "init_flags BMI088=%u AK8975=%u SPL06=%u error=%u calibrating=%u gyro_cal_failed=%u attitude_valid=%u mode=%s",

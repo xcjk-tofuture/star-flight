@@ -53,6 +53,7 @@ typedef struct {
     float f_temperature;
     float Pressure;
     float Hight;
+    float magmatrix[9]; /* Row-major full soft-iron correction, applied once. */
 } _imuData_all;
 
 typedef struct _AHRS_DATA {

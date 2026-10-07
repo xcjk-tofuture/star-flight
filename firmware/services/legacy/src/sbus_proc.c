@@ -9,6 +9,7 @@
 #include "platform_time.h"
 #include "flight_snapshot.h"
 #include "log_service.h"
+#include "flash_proc.h"
 #include <string.h>
 
 extern void UAV_Read_Param_Remote(_sbus_ch_struct *channel_data);
@@ -54,6 +55,7 @@ static u8 remoteCaliFlag = 0;
 
 static u8 remoteCaliSaveFlashFlag = 0;
 static uint8_t calibration_requests;
+static uint32_t remote_save_ticket;
 void sbus_request_calibration(uint8_t save) {
     taskENTER_CRITICAL();
     calibration_requests |= save ? 2u : 1u;
@@ -76,7 +78,7 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
             uav_logf("WARN", "SBUS", "calibration rejected: flight_state=%u", (unsigned)flight.state);
             request = 0;
         }
-        if (request & 1u) {
+        if ((request & 1u) && !remote_save_ticket) {
 
             remoteCaliFlag = 1;
             remoteCaliSaveFlashFlag = 0;
@@ -95,6 +97,15 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
         }
         if (request & 2u)
             remoteCaliSaveFlashFlag = 1;
+        if (remote_save_ticket) {
+            int result=uav_storage_result(remote_save_ticket);
+            if (result) {
+                remote_save_ticket=0; remoteCaliSaveFlashFlag=0;
+                if (result>0) remoteCaliFlag=0;
+                uav_logf(result>0 ? "INFO":"ERROR","RC_CAL","save verified=%u result=%d retry_on_failure=1",
+                         (unsigned)(result>0),result);
+            }
+        }
         if (xQueueReceive(sbus_frames, decode_buffer, pdMS_TO_TICKS(20)) == pdPASS) {
             if (decode_buffer[0] == 0x0F && decode_buffer[24] == 0x00 &&
                 !(decode_buffer[23] & 0x0C)) {
@@ -133,7 +144,7 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
             taskENTER_CRITICAL();
             CAL_SBUS_CH.Connect_State = 0;
             taskEXIT_CRITICAL();
-            if (remoteCaliFlag && SBUS_CH.Connect_State)
+            if (remoteCaliFlag && SBUS_CH.Connect_State && !remote_save_ticket)
                 Remote_Channel_Calibration();
         }
         taskENTER_CRITICAL();
@@ -167,9 +178,8 @@ void Remote_Channel_Calibration() {
     SBUS_CH.CH8_MIN = SBUS_CH.CH8 < SBUS_CH.CH8_MIN ? SBUS_CH.CH8 : SBUS_CH.CH8_MIN;
     SBUS_CH.CH8_MAX = SBUS_CH.CH8 > SBUS_CH.CH8_MAX ? SBUS_CH.CH8 : SBUS_CH.CH8_MAX;
 
-    if (remoteCaliSaveFlashFlag) {
-        if (remote_parameters_valid() && UAV_Write_Param_Remote(SBUS_CH) == 0) {
-            remoteCaliFlag = 0;
+    if (remoteCaliSaveFlashFlag && !remote_save_ticket) {
+        if (remote_parameters_valid() && UAV_Write_Param_Remote_Ticket(SBUS_CH, &remote_save_ticket) == 0) {
             remoteCaliSaveFlashFlag = 0;
         }
     }
