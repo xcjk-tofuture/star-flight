@@ -3,6 +3,7 @@
 #include "attitude.h"
 #include "flight_snapshot.h"
 #include "log_service.h"
+#include "platform_time.h"
 
 #include "lowPassFilter.h"
 #include "matrix6.h"
@@ -84,6 +85,8 @@ void Sensor_Data_Task_Proc(void const *argument) {
     UAV_Read_Param_IMU(&imudata_all);
     static TickType_t xLastWakeTime;
     xLastWakeTime = xTaskGetTickCount();
+    uint32_t last_mag_id_retry = platform_millis();
+    uint8_t mag_id_retries = 0;
 
     for (;;) {
 
@@ -145,7 +148,23 @@ void Sensor_Data_Task_Proc(void const *argument) {
         if (sensorTimeCount % UPDATE_TIME_MAG == 0) {
 #if !EXTERN_IMU
             ReadMagData(&test_mag);
-
+            /* The first boot ID read can fail while later conversions work.
+             * Recheck on this SPI2 owner after normal read/trigger cycles have
+             * started. Never permanently latch a recoverable first-read error. */
+            uint32_t mag_now = platform_millis();
+            if (AK8975Flag && mag_id_retries < 4 &&
+                (uint32_t)(mag_now - last_mag_id_retry) >= 500u) {
+                last_mag_id_retry = mag_now;
+                mag_id_retries++;
+                AK8975Flag = DrvAK8975Check();
+                SensorError = Bmi088Init_Flag || AK8975Flag;
+                uav_logf(AK8975Flag ? "WARN" : "INFO", "MAG_RECHECK",
+                         "attempt=%u/4 rc=%u attitude_mode=%s",
+                         (unsigned)mag_id_retries, (unsigned)AK8975Flag,
+                         Bmi088Init_Flag ? "BLOCKED" : AK8975Flag ? "6AXIS" : "9AXIS");
+                if (!AK8975Flag)
+                    uav_logf("INFO", "AHRS", "magnetometer ID recovered; magnetic reference enabled");
+            }
 #endif
         }
     }
