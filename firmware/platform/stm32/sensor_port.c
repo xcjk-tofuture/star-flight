@@ -7,6 +7,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "log_service.h"
+#include "imu_sample_decode.h"
 #include <string.h>
 static uint8_t observed_ids[4], observed_mask;
 static unsigned selected_device = 4;
@@ -91,6 +92,19 @@ void uav_sensor_delay_ms(uint32_t ms) {
         HAL_Delay(ms);
     else
         osDelay(ms);
+}
+int uav_sensor_read_imu(float acc[3], float gyro[3]) {
+    if (!acc || !gyro) return -1;
+    uint8_t acc_tx[8]={0x92}, acc_rx[8], gyro_tx[7]={0x82}, gyro_rx[7];
+    uav_sensor_select(0,1);
+    HAL_StatusTypeDef status=HAL_SPI_TransmitReceive(&hspi2,acc_tx,acc_rx,sizeof(acc_rx),2);
+    uav_sensor_select(0,0);
+    if (status!=HAL_OK) return -1;
+    uav_sensor_select(1,1);
+    status=HAL_SPI_TransmitReceive(&hspi2,gyro_tx,gyro_rx,sizeof(gyro_rx),2);
+    uav_sensor_select(1,0);
+    if (status!=HAL_OK) return -1;
+    return uav_imu_decode_bmi088(acc_rx,gyro_rx,acc,gyro);
 }
 void uav_device_key_scan(uint8_t *key) {
     *key = HAL_GPIO_ReadPin(UAV_KEY_PORT, UAV_KEY1_PIN) == GPIO_PIN_RESET   ? 1

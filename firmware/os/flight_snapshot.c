@@ -6,6 +6,10 @@
 static flight_snapshot_t snapshot;
 void flight_attitude_publish(float roll, float pitch, float yaw, float roll_rate, float pitch_rate,
                              float yaw_rate) {
+    flight_attitude_publish_sample(roll,pitch,yaw,roll_rate,pitch_rate,yaw_rate,platform_millis());
+}
+void flight_attitude_publish_sample(float roll, float pitch, float yaw, float roll_rate, float pitch_rate,
+                                   float yaw_rate, uint32_t sample_ms) {
     taskENTER_CRITICAL();
     snapshot.roll_rad = roll * 0.01745329252f;
     snapshot.pitch_rad = pitch * 0.01745329252f;
@@ -13,7 +17,7 @@ void flight_attitude_publish(float roll, float pitch, float yaw, float roll_rate
     snapshot.roll_rate_radps = roll_rate * 0.01745329252f;
     snapshot.pitch_rate_radps = pitch_rate * 0.01745329252f;
     snapshot.yaw_rate_radps = yaw_rate * 0.01745329252f;
-    snapshot.attitude_ms = platform_millis();
+    snapshot.attitude_ms = sample_ms;
     snapshot.valid = isfinite(roll) && isfinite(pitch) && isfinite(yaw) && isfinite(roll_rate) &&
                      isfinite(pitch_rate) && isfinite(yaw_rate);
     taskEXIT_CRITICAL();

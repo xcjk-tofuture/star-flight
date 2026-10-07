@@ -99,8 +99,6 @@ void ImuTemperatureGet(float f_temperature);
 /*IMU数据计算处理*/
 void ImuDataCalcu(u8 ins_calibrated, vec3_f gyrOffset, vec3_f accOffset, float IEM[3][3]);
 
-void IMU_Update(acc_raw_data_t acc, gyro_raw_data_t gyro, mag_raw_data_t mag, _imuData_all *imu);
-
 int AHRS_Mahony_Update(_imuData_all imu, _ahrs_data *attitude);
 void AHRS_Kalman_Update(_imuData_all imu, _ahrs_data *attitude);
 
@@ -122,4 +120,13 @@ uint8_t sensors_mag_calibration_active(void);
 void sensor_snapshot_read(_imuData_all *out);
 uint8_t sensor_calibration_step(void);
 uint8_t sensor_imu_calibrating(void);
+uint8_t sensor_imu_calibration_failed(void);
+typedef struct {
+    uint32_t samples, invalid_samples, read_errors, timing_resets, filter_resets;
+    uint32_t dt_min_us, dt_max_us, accel_rejected, mag_rejected;
+    float sample_hz;
+    uint16_t cal_samples;
+    uint8_t cal_failed, mag_used;
+} sensor_processing_stats_t;
+void sensor_processing_stats_read(sensor_processing_stats_t *out);
 #endif

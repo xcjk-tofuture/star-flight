@@ -16,4 +16,6 @@ void flight_state_publish(uint8_t state);
 void flight_fault_publish(uint8_t reason, uint32_t transitions);
 void flight_snapshot_read(flight_snapshot_t *snapshot);
 void flight_attitude_invalidate(void);
+void flight_attitude_publish_sample(float roll, float pitch, float yaw, float roll_rate,
+                                   float pitch_rate, float yaw_rate, uint32_t sample_ms);
 #endif

@@ -7,9 +7,12 @@
 
 #include "lowPassFilter.h"
 #include "imu_calibration_config.h"
+#include "imu_processing_config.h"
+#include "flash_proc.h"
 #include "pid.h"
 #include "tim.h"
 #include "stdio.h"
+#include <string.h>
 
 #define RAD_PER_DEG 0.017453293f
 #define DEG_PER_RAD 57.29577951f
@@ -48,6 +51,12 @@ PID imu_temperature_control_pid;
 
 u8 SensorError = 0;
 static u8 GyroCalFlag = 1; // 传感器校准标准位
+static uav_gyro_calibration_t startup_gyro;
+static uav_imu_pipeline_t imu_pipeline;
+static uav_imu_frame_t imu_frame;
+static uav_fusion_t imu_fusion;
+static uint32_t mag_sample_us, imu_read_errors;
+static float mag_cal_dt_s=.005f;
 
 static u8 MagCalFlag = 0;
 uint8_t sensor_imu_calibrating(void) {
@@ -56,7 +65,21 @@ uint8_t sensor_imu_calibrating(void) {
     taskEXIT_CRITICAL();
     return active;
 }
+uint8_t sensor_imu_calibration_failed(void) { return startup_gyro.failed; }
+void sensor_processing_stats_read(sensor_processing_stats_t *out) {
+    if (!out) return;
+    taskENTER_CRITICAL();
+    *out=(sensor_processing_stats_t){
+        .samples=imu_pipeline.stats.samples,.invalid_samples=imu_pipeline.stats.invalid_samples,
+        .read_errors=imu_read_errors,.timing_resets=imu_pipeline.stats.timing_resets,
+        .filter_resets=imu_pipeline.stats.filter_resets,.dt_min_us=imu_pipeline.stats.dt_min_us,
+        .dt_max_us=imu_pipeline.stats.dt_max_us,.sample_hz=imu_pipeline.stats.measured_hz,
+        .accel_rejected=imu_fusion.accel_rejected,.mag_rejected=imu_fusion.mag_rejected,
+        .cal_samples=startup_gyro.count,.cal_failed=startup_gyro.failed,.mag_used=imu_fusion.mag_used};
+    taskEXIT_CRITICAL();
+}
 static uint8_t mag_request;
+static uint8_t mag_cal_reset;
 void sensors_request_mag_calibration(void) {
     taskENTER_CRITICAL();
     mag_request = 1;
@@ -69,129 +92,167 @@ u8 SPL06Flag = 1;
 u8 IMUTemperatureFlag = 1;
 
 u32 sensorTimeCount = 0;
+static void publish_sensor_values(void) {
+    taskENTER_CRITICAL();
+    published_sensors=imudata_all;
+    taskEXIT_CRITICAL();
+}
+static void copy_imu_sample(void) {
+    const uav_imu_sample_t *s=&imu_pipeline.sample;
+    imudata_all.acc=(acc_raw_data_t){s->acc[0],s->acc[1],s->acc[2]};
+    imudata_all.gyro=(gyro_raw_data_t){s->gyro_control[0],s->gyro_control[1],s->gyro_control[2]};
+    imudata_all.mag=(mag_raw_data_t){
+        (test_mag.x-imudata_all.magoffsetbias.x)*imudata_all.magscalebias.x,
+        (test_mag.y-imudata_all.magoffsetbias.y)*imudata_all.magscalebias.y,
+        (test_mag.z-imudata_all.magoffsetbias.z)*imudata_all.magscalebias.z};
+}
 void Sensor_Data_Task_Proc(void const *argument) {
+    (void)argument;
     osDelay(1000);
-#if !EXTERN_IMU
-    Sensors_Init(); // 传感器初始化
-#else
-#ifdef SENSORS_ENABLE_SPL06
-    SPL06Flag = Drv_Spl0601_Init();
-#endif
-#endif
-
+    Sensors_Init();
     UAV_Read_Param_IMU(&imudata_all);
-    static uav_gyro_calibration_t startup_gyro;
-    int gyro_configured = uav_gyro_calibration_init(&startup_gyro, &uav_board_gyro_calibration) == 0;
-    if (!gyro_configured)
-        SensorError = 1;
-    uav_logf(gyro_configured ? "INFO" : "ERROR", "GYRO_CAL",
-             "window=%u samples period=5ms max_rate=%ldmrad/s max_std=%ldmrad/s configured=%u",
+    int configured=uav_imu_pipeline_init(&imu_pipeline,&uav_board_imu_processing)==0 &&
+                   uav_fusion_init(&imu_fusion,&uav_board_fusion)==0 &&
+                   uav_gyro_calibration_init(&startup_gyro,&uav_board_gyro_calibration)==0;
+    if (!configured) { startup_gyro.failed=1; GyroCalFlag=0; SensorError=1; }
+    uav_logf(configured ? "INFO":"ERROR","IMU_PIPE",
+             "sample_target=500Hz burst=ACC8+GYRO7 fusion_target=200Hz gyro_LPF=40Hz acc_LPF=30Hz cal_LPF=5Hz max_gap=10ms configured=%u",
+             (unsigned)configured);
+    uav_logf("INFO","GYRO_CAL",
+             "input=LPF5Hz warmup=%ums timeout=%lums window=%u max_rate=%ldmrad/s max_std=%ldmrad/s",
+             (unsigned)UAV_GYRO_CAL_WARMUP_MS,(unsigned long)UAV_GYRO_CAL_TIMEOUT_MS,
              (unsigned)uav_board_gyro_calibration.samples,
-             (long)(uav_board_gyro_calibration.max_rate_rad_s * 1000.0f),
-             (long)(uav_board_gyro_calibration.max_rate_std_rad_s * 1000.0f),
-             (unsigned)gyro_configured);
-    static TickType_t xLastWakeTime;
-    xLastWakeTime = xTaskGetTickCount();
-    uint32_t last_mag_id_retry = platform_millis();
-    uint8_t mag_id_retries = 0;
-
+             (long)(uav_board_gyro_calibration.max_rate_rad_s*1000),
+             (long)(uav_board_gyro_calibration.max_rate_std_rad_s*1000));
+    uint32_t cal_start=platform_millis(), cal_report=cal_start, warmup_start=cal_start;
+    uint32_t last_mag=cal_start, last_baro=cal_start, last_temp=cal_start, last_heater=cal_start;
+    uint32_t last_mag_retry=cal_start, last_report=cal_start, mag_retries=0;
+    uint32_t next_fusion=platform_micros()+UAV_IMU_FUSION_PERIOD_US;
+    uint32_t rejected[UAV_GYRO_REASON_COUNT]={0}, cal_timing_resets=0;
+    TickType_t wake=xTaskGetTickCount();
     for (;;) {
-
-        if ((TickType_t)(xTaskGetTickCount() - xLastWakeTime) > pdMS_TO_TICKS(5)) {
-            xLastWakeTime = xTaskGetTickCount();
-            flight_attitude_invalidate();
-            if (GyroCalFlag)
-                uav_gyro_calibration_init(&startup_gyro, &uav_board_gyro_calibration);
-        }
-        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1)); // 绝对延时
+        vTaskDelayUntil(&wake,pdMS_TO_TICKS(UAV_IMU_SAMPLE_PERIOD_MS));
+        uint32_t now=platform_millis();
+        if ((TickType_t)(xTaskGetTickCount()-wake)>=pdMS_TO_TICKS(UAV_IMU_SAMPLE_PERIOD_MS))
+            wake=xTaskGetTickCount(); /* Drop catch-up bursts, retain real sample time. */
         sensorTimeCount++;
-        taskENTER_CRITICAL();
-        uint8_t request = mag_request;
-        mag_request = 0;
-        taskEXIT_CRITICAL();
-        flight_snapshot_t flight;
-        flight_snapshot_read(&flight);
-        if (request && flight.state != 0) {
-            uav_logf("WARN", "SENSOR", "magnetic calibration rejected: flight_state=%u", (unsigned)flight.state);
-            request = 0;
+        if (GyroCalFlag && uav_gyro_calibration_expire(&startup_gyro,(uint32_t)(now-cal_start),UAV_GYRO_CAL_TIMEOUT_MS)) {
+            GyroCalFlag=0; SensorError=1; flight_attitude_invalidate();
+            uav_logf("ERROR","GYRO_CAL","FAILED timeout=%lums collected=%u/%u rate=%lu gravity=%lu variance=%lu invalid=%lu timing=%lu retry=RESET",
+                     (unsigned long)UAV_GYRO_CAL_TIMEOUT_MS,(unsigned)startup_gyro.count,
+                     (unsigned)startup_gyro.config.samples,(unsigned long)rejected[UAV_GYRO_REASON_RATE],
+                     (unsigned long)rejected[UAV_GYRO_REASON_GRAVITY],(unsigned long)rejected[UAV_GYRO_REASON_VARIANCE],
+                     (unsigned long)rejected[UAV_GYRO_REASON_INVALID],(unsigned long)cal_timing_resets);
         }
-        if (request && !AK8975Flag) {
-            if (GyroCalFlag)
-                uav_gyro_calibration_init(&startup_gyro, &uav_board_gyro_calibration);
-            MagCalFlag = 1;
+        float acc[3],gyro[3];
+        uint32_t begin_us=platform_micros();
+        int read_status=Bmi088Init_Flag ? -1 : uav_sensor_read_imu(acc,gyro);
+        uint32_t end_us=platform_micros(), sample_us=begin_us+(uint32_t)(end_us-begin_us)/2;
+        uint32_t sample_ms=platform_millis();
+        uint32_t previous_resets=imu_pipeline.stats.filter_resets;
+        int sample_good=configured && read_status==0 && uav_imu_pipeline_push(&imu_pipeline,acc,gyro,sample_us)==0;
+        if (!sample_good) {
+            if (read_status) { imu_read_errors++; uav_imu_pipeline_discard(&imu_pipeline); }
             flight_attitude_invalidate();
-        } else if (request)
-            uav_logf("WARN", "SENSOR", "magnetic calibration rejected: magnetometer initialization failed");
-#if !EXTERN_IMU
-
-        if (sensorTimeCount % 2 == 0) {
-            ReadAccTemperature(&imudata_all.f_temperature);
-            ReadAccData(&test_acc);
-            ReadGyroData(&test_gyro);
+            if (GyroCalFlag) {
+                uav_gyro_calibration_init(&startup_gyro,&uav_board_gyro_calibration);
+                cal_timing_resets++; warmup_start=now;
+            }
+        } else {
+            test_acc=(acc_raw_data_t){acc[0],acc[1],acc[2]};
+            test_gyro=(gyro_raw_data_t){gyro[0],gyro[1],gyro[2]};
+            copy_imu_sample();
+            if (GyroCalFlag && previous_resets!=imu_pipeline.stats.filter_resets) {
+                uav_gyro_calibration_init(&startup_gyro,&uav_board_gyro_calibration);
+                warmup_start=now; cal_timing_resets++;
+            }
         }
-#endif
-        if (sensorTimeCount % UPDATE_TIME == 0) {
-            IMU_Temperature_Control(40);
-            imudata_all.Pressure = Drv_SPl0601_Read();
-            // Spl0601Get(&imudata_all.Hight);
-#if !EXTERN_IMU
-
-            IMU_Update(test_acc, test_gyro, test_mag, &imudata_all);
-            taskENTER_CRITICAL();
-            published_sensors = imudata_all;
-            taskEXIT_CRITICAL();
-            /* BMI088 is required for attitude. Optional sensor failures retain
-             * their diagnostic flags without blocking six-axis operation. */
-            if (gyro_configured && !(GyroCalFlag || MagCalFlag || Bmi088Init_Flag)) {
-                // AHRS_Kalman_Update(imudata_all, &attitude_t);
-                if (AHRS_Mahony_Update(imudata_all, &attitude_t) == 0)
-                    flight_attitude_publish(attitude_t.roll, attitude_t.pitch, attitude_t.yaw,
-                                            attitude_t.rollSpeed, attitude_t.pitchSpeed,
-                                            attitude_t.yawSpeed);
-                else
-                    flight_attitude_invalidate();
-            } else if (MagCalFlag == 1) {
-                Mag_Zero_Offset_Calibration(&imudata_all);
-            } else {
-                // printf("CALLING... \r\n");
-                flight_attitude_invalidate();
-                const float gyro[3] = {test_gyro.roll, test_gyro.pitch, test_gyro.yaw};
-                const float acc[3] = {test_acc.x, test_acc.y, test_acc.z};
-                float bias[3];
-                if (gyro_configured && !Bmi088Init_Flag && GyroCalFlag &&
-                    uav_gyro_calibration_feed(&startup_gyro, gyro, acc, bias) == UAV_GYRO_READY) {
-                    imudata_all.gyrooffsetbias = (Vector3f_t){bias[0], bias[1], bias[2]};
-                    GyroCalFlag = 0;
-                    Cold_Start_ARHS(imudata_all, &attitude_t);
-                    uav_logf("INFO", "GYRO_CAL", "complete bias_mrad/s=%ld,%ld,%ld mode=%s",
-                             (long)(bias[0] * 1000.0f), (long)(bias[1] * 1000.0f),
-                             (long)(bias[2] * 1000.0f), AK8975Flag ? "6AXIS" : "9AXIS");
+        if ((uint32_t)(now-last_mag)>=UAV_IMU_MAG_PERIOD_MS) {
+            last_mag=now; ReadMagData(&test_mag); mag_sample_us=platform_micros();
+            if (AK8975Flag && mag_retries<4 && (uint32_t)(now-last_mag_retry)>=500u) {
+                last_mag_retry=now; mag_retries++; AK8975Flag=DrvAK8975Check();
+                SensorError=Bmi088Init_Flag || AK8975Flag || startup_gyro.failed;
+                uav_logf(AK8975Flag ? "WARN":"INFO","MAG_RECHECK","attempt=%u/4 rc=%u",
+                         (unsigned)mag_retries,(unsigned)AK8975Flag);
+            }
+            if (sample_good) copy_imu_sample();
+        }
+        if ((uint32_t)(now-last_temp)>=UAV_IMU_TEMPERATURE_PERIOD_MS) {
+            last_temp=now;
+            if (!Bmi088Init_Flag) ReadAccTemperature(&imudata_all.f_temperature);
+        }
+        if ((uint32_t)(now-last_heater)>=50u) {
+            last_heater=now;
+            if (!Bmi088Init_Flag && isfinite(imudata_all.f_temperature) &&
+                imudata_all.f_temperature>=-40 && imudata_all.f_temperature<=85)
+                IMU_Temperature_Control(40);
+            else uav_device_heater_write(0);
+        }
+        if (!SPL06Flag && (uint32_t)(now-last_baro)>=UAV_IMU_BARO_PERIOD_MS) {
+            last_baro=now; imudata_all.Pressure=Drv_SPl0601_Read();
+        }
+        taskENTER_CRITICAL();
+        uint8_t request=mag_request; mag_request=0;
+        taskEXIT_CRITICAL();
+        if (request) {
+            flight_snapshot_t flight; flight_snapshot_read(&flight);
+            if (flight.state==0 && !GyroCalFlag && !startup_gyro.failed && !AK8975Flag) {
+                mag_cal_reset=1; MagCalFlag=1; flight_attitude_invalidate();
+            } else uav_logf("WARN","SENSOR","magnetic calibration rejected: state=%u gyro_cal=%u failed=%u mag_rc=%u",
+                           (unsigned)flight.state,(unsigned)GyroCalFlag,(unsigned)startup_gyro.failed,(unsigned)AK8975Flag);
+        }
+        if (sample_good && (int32_t)(sample_us-next_fusion)>=0) {
+            next_fusion+=UAV_IMU_FUSION_PERIOD_US;
+            if ((int32_t)(sample_us-next_fusion)>=0) next_fusion=sample_us+UAV_IMU_FUSION_PERIOD_US;
+            if (uav_imu_pipeline_consume(&imu_pipeline,&imu_frame)==0) {
+                if (GyroCalFlag && (uint32_t)(now-warmup_start)>=UAV_GYRO_CAL_WARMUP_MS) {
+                    float bias[3];
+                    int result=uav_gyro_calibration_feed(&startup_gyro,imu_frame.gyro_calibration,imu_frame.acc,bias);
+                    if (result==UAV_GYRO_REJECTED) rejected[startup_gyro.reject_reason]++;
+                    else if (result==UAV_GYRO_READY) {
+                        imudata_all.gyrooffsetbias=(Vector3f_t){bias[0],bias[1],bias[2]};
+                        uav_imu_pipeline_set_bias(&imu_pipeline,bias);
+                        GyroCalFlag=0;
+                        Cold_Start_ARHS(imudata_all,&attitude_t);
+                        uav_logf("INFO","GYRO_CAL","complete elapsed=%lums bias_mrad/s=%ld,%ld,%ld",
+                                 (unsigned long)(now-cal_start),(long)(bias[0]*1000),(long)(bias[1]*1000),(long)(bias[2]*1000));
+                        /* This frame predates the new bias. Publish on the next fresh interval. */
+                        imu_frame.dt_s=0;
+                    }
                 }
+                if (!GyroCalFlag && !startup_gyro.failed && !MagCalFlag && imu_frame.dt_s>0) {
+                    if (AHRS_Mahony_Update(imudata_all,&attitude_t)==0)
+                        flight_attitude_publish_sample(attitude_t.roll,attitude_t.pitch,attitude_t.yaw,
+                            attitude_t.rollSpeed,attitude_t.pitchSpeed,attitude_t.yawSpeed,sample_ms);
+                    else flight_attitude_invalidate();
+                } else if (MagCalFlag) {
+                    flight_attitude_invalidate();
+                    mag_cal_dt_s=imu_frame.dt_s;
+                    imudata_all.mag=test_mag; /* Existing calibration measures uncorrected extrema. */
+                    Mag_Zero_Offset_Calibration(&imudata_all);
+                    if (!MagCalFlag) Cold_Start_ARHS(imudata_all,&attitude_t);
+                    copy_imu_sample();
+                }
+                publish_sensor_values();
             }
-#endif
         }
-
-        if (sensorTimeCount % UPDATE_TIME_MAG == 0) {
-#if !EXTERN_IMU
-            ReadMagData(&test_mag);
-            /* The first boot ID read can fail while later conversions work.
-             * Recheck on this SPI2 owner after normal read/trigger cycles have
-             * started. Never permanently latch a recoverable first-read error. */
-            uint32_t mag_now = platform_millis();
-            if (AK8975Flag && mag_id_retries < 4 &&
-                (uint32_t)(mag_now - last_mag_id_retry) >= 500u) {
-                last_mag_id_retry = mag_now;
-                mag_id_retries++;
-                AK8975Flag = DrvAK8975Check();
-                SensorError = Bmi088Init_Flag || AK8975Flag;
-                uav_logf(AK8975Flag ? "WARN" : "INFO", "MAG_RECHECK",
-                         "attempt=%u/4 rc=%u attitude_mode=%s",
-                         (unsigned)mag_id_retries, (unsigned)AK8975Flag,
-                         Bmi088Init_Flag ? "BLOCKED" : AK8975Flag ? "6AXIS" : "9AXIS");
-                if (!AK8975Flag)
-                    uav_logf("INFO", "AHRS", "magnetometer ID recovered; magnetic reference enabled");
-            }
-#endif
+        if (GyroCalFlag && (uint32_t)(now-cal_report)>=1000u) {
+            cal_report=now;
+            uav_logf("INFO","GYRO_CAL","progress=%u/%u elapsed=%lums rate=%lu gravity=%lu variance=%lu invalid=%lu timing=%lu",
+                     (unsigned)startup_gyro.count,(unsigned)startup_gyro.config.samples,(unsigned long)(now-cal_start),
+                     (unsigned long)rejected[UAV_GYRO_REASON_RATE],(unsigned long)rejected[UAV_GYRO_REASON_GRAVITY],
+                     (unsigned long)rejected[UAV_GYRO_REASON_VARIANCE],(unsigned long)rejected[UAV_GYRO_REASON_INVALID],
+                     (unsigned long)cal_timing_resets);
+        }
+        if ((uint32_t)(now-last_report)>=5000u) {
+            last_report=now;
+            uav_logf(startup_gyro.failed ? "ERROR":"INFO","IMU_PIPE","Hz=%lu cal=%u failed=%u dt_us=%lu..%lu bad=%lu read_errors=%lu timing=%lu filter_resets=%lu acc_weight=%u mag_used=%u acc_reject=%lu mag_reject=%lu",
+                     (unsigned long)imu_pipeline.stats.measured_hz,(unsigned)GyroCalFlag,(unsigned)startup_gyro.failed,
+                     (unsigned long)imu_pipeline.stats.dt_min_us,
+                     (unsigned long)imu_pipeline.stats.dt_max_us,(unsigned long)imu_pipeline.stats.invalid_samples,
+                     (unsigned long)imu_read_errors,(unsigned long)imu_pipeline.stats.timing_resets,
+                     (unsigned long)imu_pipeline.stats.filter_resets,(unsigned)(imu_fusion.accel_weight*1000),
+                     (unsigned)imu_fusion.mag_used,(unsigned long)imu_fusion.accel_rejected,(unsigned long)imu_fusion.mag_rejected);
         }
     }
 }
@@ -248,6 +309,20 @@ void Sensors_Init() // 传感器初始化
 
     AK8975Flag = DrvAK8975Check();
     Bmi088Init_Flag = BMI088_INIT();
+    if (!Bmi088Init_Flag) {
+        uint8_t acc_conf, gyro_band, acc_range, gyro_range;
+        WriteDataToAcc(ACC_CONF_ADDR,UAV_IMU_ACCEL_CONFIG);
+        WriteDataToGyro(GYRO_BANDWIDTH_ADDR,UAV_IMU_GYRO_BANDWIDTH);
+        ReadSingleDataFromAcc(ACC_CONF_ADDR,&acc_conf);
+        ReadSingleDataFromGyro(GYRO_BANDWIDTH_ADDR,&gyro_band);
+        ReadSingleDataFromAcc(ACC_RANGE_ADDR,&acc_range);
+        ReadSingleDataFromGyro(GYRO_RANGE_ADDR,&gyro_range);
+        if ((acc_conf&0x7fu)!=(UAV_IMU_ACCEL_CONFIG&0x7fu) || (gyro_band&7u)!=UAV_IMU_GYRO_BANDWIDTH ||
+            (acc_range&3u)!=0 || (gyro_range&7u)!=2) Bmi088Init_Flag=1;
+        uav_logf(Bmi088Init_Flag ? "ERROR":"INFO","IMU_PROFILE",
+                 "acc_conf=0x%02x gyro_bw=0x%02x acc_range=%u gyro_range=%u expected=3g/500dps acc_ODR=800Hz gyro_ODR=1000Hz BW=116Hz",
+                 (unsigned)acc_conf,(unsigned)gyro_band,(unsigned)acc_range,(unsigned)gyro_range);
+    }
 
 #ifdef SENSORS_ENABLE_SPL06
     SPL06Flag = Drv_Spl0601_Init();
@@ -281,9 +356,16 @@ void Mag_Zero_Offset_Calibration(_imuData_all *imu) {
     static float gyroRoll, gyroPitch, gyroYaw;
     static float magXMax, magYMax, magZMax;
     static float magXMin, magYMin, magZMin;
+    static uint32_t last_save_attempt, saved_ms;
+    if (mag_cal_reset) {
+        mag_cal_reset=0; magCalistep=0;
+        gyroRoll=gyroPitch=gyroYaw=0;
+        magXMax=magXMin=imu->mag.x; magYMax=magYMin=imu->mag.y; magZMax=magZMin=imu->mag.z;
+        last_save_attempt=platform_millis()-1000u;
+    }
     switch (magCalistep) {
     case 0:
-        gyroRoll += imu->gyro.roll * (UPDATE_TIME / 1000.f);
+        gyroRoll += imu->gyro.roll * mag_cal_dt_s;
         magZMax = magZMax > imu->mag.z ? magZMax : imu->mag.z;
         magZMin = magZMin < imu->mag.z ? magZMin : imu->mag.z;
 
@@ -292,7 +374,7 @@ void Mag_Zero_Offset_Calibration(_imuData_all *imu) {
         break;
     case 1:
         imu->magoffsetbias.z = (magZMax + magZMin) / 2;
-        gyroPitch += imu->gyro.pitch * (UPDATE_TIME / 1000.f);
+        gyroPitch += imu->gyro.pitch * mag_cal_dt_s;
         magZMax = magZMax > imu->mag.z ? magZMax : imu->mag.z;
         magZMin = magZMin < imu->mag.z ? magZMin : imu->mag.z;
 
@@ -301,7 +383,7 @@ void Mag_Zero_Offset_Calibration(_imuData_all *imu) {
         break;
     case 2:
         imu->magoffsetbias.z = (magZMax + magZMin) / 2;
-        gyroYaw += imu->gyro.yaw * (UPDATE_TIME / 1000.f);
+        gyroYaw += imu->gyro.yaw * mag_cal_dt_s;
         magXMax = magXMax > imu->mag.x ? magXMax : imu->mag.x;
         magXMin = magXMin < imu->mag.x ? magXMin : imu->mag.x;
         magYMax = magYMax > imu->mag.y ? magYMax : imu->mag.y;
@@ -310,17 +392,22 @@ void Mag_Zero_Offset_Calibration(_imuData_all *imu) {
             magCalistep = 3;
         break;
     case 3:
+        if ((uint32_t)(platform_millis()-last_save_attempt)<1000u) break;
+        last_save_attempt=platform_millis();
         imu->magoffsetbias.x = (magXMax + magXMin) / 2;
         imu->magoffsetbias.y = (magYMax + magYMin) / 2;
         gyroRoll = 0;
         gyroPitch = 0;
         gyroYaw = 0;
-        UAV_Write_Param_IMU(*imu); // 写入数据
-        osDelay(1000);
+        if (UAV_Write_Param_IMU(*imu)!=0) {
+            uav_logf("WARN","MAG_CAL","save rejected; retry pending");
+            break;
+        }
+        saved_ms=platform_millis();
         magCalistep = 4;
         break;
     case 4:
-        osDelay(1000);
+        if (uav_storage_busy() || (uint32_t)(platform_millis()-saved_ms)<1000u) break;
         magCalistep = 0;
         MagCalFlag = 0;
         break;
@@ -345,7 +432,7 @@ void IMU_Temperature_Control_Init() // IMU恒温控制初始化
 void IMU_Temperature_Control(float target) // IMU恒温控制  输入温度
 {
     s16 out;
-    out = (s16)PID_Control(&imu_temperature_control_pid, &imu_temperature_control_pid_data, 0.005f,
+    out = (s16)PID_Control(&imu_temperature_control_pid, &imu_temperature_control_pid_data, 0.05f,
                            0, target, imudata_all.f_temperature, 1000);
     out = out > 999 ? 999 : out;
     out = out < 0 ? 0 : out;
@@ -375,92 +462,20 @@ float invSqrt(float x) { return isfinite(x) && x > 0.0f ? 1.0f / sqrtf(x) : 0.0f
 float q0 = 1, q1 = 0, q2 = 0, q3 = 0;  // quaternion elements representing the estimated orientation
 float exInt = 0, eyInt = 0, ezInt = 0; // scaled integral error
 
-void IMU_Update(acc_raw_data_t acc, gyro_raw_data_t gyro, mag_raw_data_t mag, _imuData_all *imu) {
-    //	imu->acc.x =imu->acc.x * (1 - 0.9) + acc.x * 0.9;
-    //	imu->acc.y =imu->acc.y * (1 - 0.9) + acc.y * 0.9;
-    //	imu->acc.z =imu->acc.z * (1 - 0.9) + acc.z * 0.9; //一阶低通滤波33
-
-    //	gyro.roll = gyro.roll - imu->gyrooffsetbias.x;
-    //	gyro.pitch = gyro.pitch - imu->gyrooffsetbias.y;
-    //	gyro.yaw = gyro.yaw - imu->gyrooffsetbias.z;
-
-    //	imu->gyro.pitch =imu->gyro.pitch * (1 - 0.3) +  gyro.pitch * 0.3;
-    //	imu-> gyro.roll =imu-> gyro.roll * (1 - 0.3) +  gyro.roll * 0.3;
-    //	imu-> gyro.yaw =imu-> gyro.yaw * (1 - 0.3) +  gyro.yaw * 0.3; //一阶低通滤波33
-
-    imu->acc.x = acc.x;
-    imu->acc.y = acc.y;
-    imu->acc.z = acc.z;
-
-    static LPF2ndData_t LPF2_GYRO;
-    Vector3f_t LPF2_GYRO_Data;
-
-    static LPF2ndData_t LPF2_ACC;
-    Vector3f_t LPF2_ACC_Data;
-
-    static LPF2ndData_t LPF2_MAG;
-    Vector3f_t LPF2_MAG_Data;
-
-    LPF2_GYRO_Data.x = gyro.roll - imu->gyrooffsetbias.x;
-    LPF2_GYRO_Data.y = gyro.pitch - imu->gyrooffsetbias.y;
-    LPF2_GYRO_Data.z = gyro.yaw - imu->gyrooffsetbias.z;
-
-    LPF2_ACC_Data.x = acc.x;
-    LPF2_ACC_Data.y = acc.y;
-    LPF2_ACC_Data.z = acc.z;
-
-    LowPassFilter2ndFactorCal(UPDATE_TIME / 1000.0f, 51, &LPF2_GYRO);
-    LPF2_GYRO_Data = LowPassFilter2nd(&LPF2_GYRO, LPF2_GYRO_Data); // 陀螺仪二阶低通滤波
-                                                                   // 截止频率50HZ
-
-    LowPassFilter2ndFactorCal(UPDATE_TIME / 1000.0f, 51, &LPF2_ACC);
-    LPF2_ACC_Data = LowPassFilter2nd(&LPF2_ACC, LPF2_ACC_Data); // 陀螺仪二阶低通滤波 截止频率50HZ
-
-    imu->gyro.pitch = LPF2_GYRO_Data.y;
-    imu->gyro.roll = LPF2_GYRO_Data.x;
-    imu->gyro.yaw = LPF2_GYRO_Data.z; // 减去零偏误差
-
-    imu->acc.x = LPF2_ACC_Data.x;
-    imu->acc.y = LPF2_ACC_Data.y;
-    imu->acc.z = LPF2_ACC_Data.z; // 减去零偏误差
-
-    imu->mag.x = mag.x - imu->magoffsetbias.x;
-    imu->mag.y = mag.y - imu->magoffsetbias.y;
-    imu->mag.z = mag.z - imu->magoffsetbias.z;
-}
 
 int AHRS_Mahony_Update(_imuData_all imu, _ahrs_data *attitude) {
-    static uav_attitude_t filter;
-    static uint8_t initialized;
-    const float acc[3] = {imu.acc.x, imu.acc.y, imu.acc.z};
-    const float gyro[3] = {imu.gyro.roll, imu.gyro.pitch, imu.gyro.yaw};
-    const float mag[3] = {AK8975Flag ? 0.0f : imu.mag.x,
-                         AK8975Flag ? 0.0f : imu.mag.y,
-                         AK8975Flag ? 0.0f : imu.mag.z};
-    if (!initialized) {
-        uav_attitude_init(&filter);
-        initialized = 1;
-    }
-    filter.q[0] = attitude->q0;
-    filter.q[1] = attitude->q1;
-    filter.q[2] = attitude->q2;
-    filter.q[3] = attitude->q3;
-    if (filter.q[0] * filter.q[0] + filter.q[1] * filter.q[1] + filter.q[2] * filter.q[2] +
-            filter.q[3] * filter.q[3] <
-        1e-12f)
-        uav_attitude_init(&filter);
-    if (uav_attitude_step(&filter, acc, gyro, mag, UPDATE_TIME / 1000.0f) != 0)
+    const float mag[3]={imu.mag.x,imu.mag.y,imu.mag.z};
+    if (uav_fusion_step(&imu_fusion,imu_frame.acc,imu_frame.gyro_average,mag,
+                        platform_micros(),mag_sample_us,!AK8975Flag,imu_frame.dt_s)!=0)
         return -1;
-    attitude->q0 = filter.q[0];
-    attitude->q1 = filter.q[1];
-    attitude->q2 = filter.q[2];
-    attitude->q3 = filter.q[3];
-    attitude->roll = filter.roll_deg;
-    attitude->pitch = filter.pitch_deg;
-    attitude->yaw = filter.yaw_deg;
-    attitude->rollSpeed = imu.gyro.roll * DEG_PER_RAD;
-    attitude->pitchSpeed = imu.gyro.pitch * DEG_PER_RAD;
-    attitude->yawSpeed = imu.gyro.yaw * DEG_PER_RAD;
+    attitude->q0=imu_fusion.q[0]; attitude->q1=imu_fusion.q[1];
+    attitude->q2=imu_fusion.q[2]; attitude->q3=imu_fusion.q[3];
+    attitude->roll=imu_fusion.roll_deg;
+    attitude->pitch=imu_fusion.pitch_deg;
+    attitude->yaw=imu_fusion.yaw_deg;
+    attitude->rollSpeed=(imu_frame.gyro_control[0]+imu_fusion.gyro_bias[0])*DEG_PER_RAD;
+    attitude->pitchSpeed=(imu_frame.gyro_control[1]+imu_fusion.gyro_bias[1])*DEG_PER_RAD;
+    attitude->yawSpeed=(imu_frame.gyro_control[2]+imu_fusion.gyro_bias[2])*DEG_PER_RAD;
     return 0;
 }
 
@@ -563,61 +578,7 @@ void AHRS_Kalman_Update(_imuData_all imu, _ahrs_data *attitude) {
 }
 
 void Cold_Start_ARHS(_imuData_all imu, _ahrs_data *attitude) {
-    float roll, pitch, yaw = 0;
-
-    float ax = imu.acc.x;
-    float ay = imu.acc.y;
-    float az = imu.acc.z;
-
-    float gx = imu.gyro.roll;
-    float gy = imu.gyro.pitch;
-    float gz = imu.gyro.yaw;
-
-    float mbx = imu.mag.x;
-    float mby = imu.mag.y;
-    float mbz = imu.mag.z;
-
-    float mZx, mZy, mZz = 0;
-
-    roll = atan((ay) / (az));
-    pitch = -1 * atan((ax) / sqrt(ay * ay + az * az));
-
-    mZx = cos(pitch) * mbx + sin(pitch) * sin(roll) * mby +
-          sin(pitch) * cos(roll) * mbz; // 先绕roll 再绕pitch
-    mZy = cos(roll) * mby - sin(roll) * mbz;
-
-    yaw = atan(mZy / mZx);
-
-    //	attitude->yaw = -yaw * SEC2DEG;
-    //	attitude->pitch = pitch * SEC2DEG;   //T13
-    //	attitude->roll = roll * SEC2DEG;  // T23/T33
-
-    // 将角度转换为弧度
-    double half_roll = roll * 0.5;
-    double half_pitch = pitch * 0.5;
-    double half_yaw = yaw * 0.5;
-
-    // 计算三角函数值
-    double sin_r = sin(half_roll);
-    double cos_r = cos(half_roll);
-    double sin_p = sin(half_pitch);
-    double cos_p = cos(half_pitch);
-    double sin_y = sin(half_yaw);
-    double cos_y = cos(half_yaw);
-
-    // 计算四元数
-    //	attitude->q0 = cos_r * cos_p * cos_y - sin_r * sin_p * sin_y;
-    //	attitude->q1 = sin_r * cos_p * cos_y + cos_r * sin_p * sin_y;
-    //	attitude->q2 = cos_r * sin_p * cos_y - sin_r * cos_p * sin_y;
-    //	attitude->q3 = cos_r * cos_p * sin_y + sin_r * sin_p * cos_y;
-    attitude->q0 = 1;
-    attitude->q1 = 0;
-    attitude->q2 = 0;
-    attitude->q3 = 0;
-
-    //	// 计算四元数
-    //	attitude->q0 = cos_r * cos_p * cos_y + sin_r * sin_p * sin_y;
-    //	attitude->q1  = sin_r * cos_p * cos_y - cos_r * sin_p * sin_y;
-    //	attitude->q2  = cos_r * sin_p * cos_y + sin_r * cos_p * sin_y;
-    //	attitude->q3  = cos_r * cos_p * sin_y - sin_r * sin_p * cos_y;
+    (void)imu;
+    uav_fusion_init(&imu_fusion,&uav_board_fusion);
+    attitude->q0=1; attitude->q1=attitude->q2=attitude->q3=0;
 }

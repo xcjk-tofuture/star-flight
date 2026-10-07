@@ -79,12 +79,16 @@ set(FIRMWARE_SOURCES
   firmware/algorithms/math/src/vector3.c
   firmware/app/startup.c
   firmware/app/boot_log.c
+  firmware/algorithms/filter/biquad.c
+  firmware/algorithms/attitude/fusion.c
+  firmware/services/imu_pipeline.c
   firmware/app/tasks/serial_task.c
   firmware/drivers/motor/uav_actuator.c
   firmware/os/flight_snapshot.c
   firmware/os/ports/freertos-10.3.1/GCC/ARM_CM4F/port.c
   firmware/platform/stm32/platform_time.c
   firmware/platform/stm32/serial_port.c
+  firmware/platform/stm32/imu_sample_decode.c
   firmware/platform/stm32/startup_stm32f407xx.S
   firmware/services/legacy/src/AHRS.c
   firmware/services/legacy/src/flash_proc.c
@@ -100,6 +104,7 @@ set(FIRMWARE_SOURCES
   firmware/platform/syscalls.c
 )
 set(FIRMWARE_INCLUDES
+  firmware/algorithms/filter
   firmware/algorithms/calibration
   firmware/services/parameters
   firmware/drivers/storage
