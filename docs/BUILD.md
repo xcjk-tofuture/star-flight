@@ -75,4 +75,8 @@ Debug/Release 软件构建及主机测试已有通过记录；探针烧录、实
 
 ## 版本兼容与回滚
 
+当前F407VE应用上限256KiB，新增`parameters_region.ld`链接断言，原`firmware.ld`保留。
+S6/S7保存参数，常规按映像烧录可保留；Full chip/mass erase会清空全部校准。
+首次切换片内后端需重新校准遥控和磁力计；详见[FLASH_LAYOUT.md](FLASH_LAYOUT.md)。
+
 旧源码提交 `977d5b068c73dccd3e709bc8414d04f70d11acac` 可在独立 checkout 中检查；协议/参数格式按对应固件版本使用。新参数记录不会自动载入旧裸记录，遥控需重新校准。TM4C 仅同步适用的基础变更。不要以旧参数格式解释新版记录。

@@ -21,6 +21,8 @@ UART1，115200。遥测周期 20..1000 ms。状态 payload 共 14 字节：`stat
 `0x2000` 姿态查询当前与状态命令返回相同的 14 字节，不返回角速度。
 
 `0x2001` 只读诊断的成功数据：`fault:u8 + transitions:u32 + rejected_writes:u32 + sequence[3]:u32 + storage_busy:u8`，加上首字节状态码共 23 字节。sequence 顺序是 IMU、遥控、PID。
+片内存储版本中，首个sequence取最近加载/保存的IMU兼容块或磁椭球块，满矩阵磁块加载优先；
+该诊断不改变帧长度，也不新增串口参数写接口。详细校准系数与保存完成结果见MAG_CAL/STORAGE日志。
 
 状态：0 锁定、1 解锁怠速、2 自稳、3 急停。故障位：bit0 遥控/通道、bit1 姿态、bit2 标定/存储、bit3 急停开关、bit4 时序/非法状态。
 不提供串口解锁、飞控目标或电机输出写入。标定记录和状态转换见 [ARCHITECTURE.md](ARCHITECTURE.md)。

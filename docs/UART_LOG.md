@@ -57,6 +57,9 @@ powershell -ExecutionPolicy Bypass -File .\tools\uart-monitor.ps1 -Port COM7
 - SYSCLK/HCLK/PCLK1/PCLK2，PLL 时钟源、M/N/P/Q 和 RCC 寄存器。
 - 六路串口的波特率、有效数据位、校验、停止位、BRR 和引脚；SPI1/2 的实际总线频率、分频、模式和引脚。
 - 外部 Flash 的读取 ID、预期 ID、初始化返回值，以及继续诊断启动的提示。
+- `EXT_FLASH`为可选W25诊断；`STORAGE backend=INTERNAL ready=1`表示片内参数后端已初始化，启动不擦除。
+- 已保存磁椭球参数会打印`MAG_CAL loaded full_matrix=1`、各行矩阵（×1000）、偏置、场强和RMS。
+  手动校准只有`COMPLETE saved=1 readback=1`才表示已保存并用于融合；等待写入时不提前报成功。
 - 每个资源初始化的开始、返回值和剩余堆；每个任务的句柄、优先级、配置栈大小。
 - 调度器启动情况、遥测周期、LOG 命令和缓存大小。
 - PC 任务运行约两秒和八秒后：传感器初始化标志、姿态有效标志、实际 ID、传感器数据、UART 发送统计、OLED/PC/Sensor 历史最小栈余量、堆余量及日志丢弃数。

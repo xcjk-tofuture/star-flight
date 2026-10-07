@@ -2,6 +2,7 @@
 
 显式状态守卫、标定记录格式/双副本、遥控范围检查、启动 gyro 连续静止样本/方差守卫、诊断及 CI/录包工具已有实现。
 采集整块读取、微秒区间积分、分通道Butterworth、30秒校准超时及磁场质量守卫已有实现，实物验收见 [IMU_PIPELINE.md](IMU_PIPELINE.md)。
+片内双区追加参数存储、完整磁椭球矩阵、质量门限和保存确认已接入并编译；新增模块主机测试及实物验收待做，见[FLASH_LAYOUT.md](FLASH_LAYOUT.md)与[CALIBRATION.md](CALIBRATION.md)。
 
 | 优先级 | 工作 | 依赖 | 验收条件 / 方法 |
 |---|---|---|---|
