@@ -9,6 +9,9 @@ void uav_sensor_id_snapshot(uint8_t ids[4], uint8_t *seen);
 /* Read each XYZ vector as one coherent burst; buffers are owned until return.
  * Application profile must remain +/-3g and +/-500deg/s. No repeated range reads. */
 int uav_sensor_read_imu(float acc[3], float gyro[3]);
+/* AK8975 single conversion: 1=fresh, 0=pending, -1=bus/status failure. */
+int uav_sensor_read_mag(float mag[3]);
+void uav_sensor_mag_status(uint8_t *st1, uint8_t *st2);
 void uav_sensor_tx(const uint8_t *bytes, uint16_t size);
 void uav_sensor_rx(uint8_t *bytes, uint16_t size);
 uint8_t uav_sensor_byte(uint8_t byte);

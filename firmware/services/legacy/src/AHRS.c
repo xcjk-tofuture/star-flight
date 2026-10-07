@@ -56,6 +56,7 @@ static uav_imu_pipeline_t imu_pipeline;
 static uav_imu_frame_t imu_frame;
 static uav_fusion_t imu_fusion;
 static uint32_t mag_sample_us, imu_read_errors;
+static uint32_t mag_read_errors, mag_not_ready, mag_fresh_samples;
 static float mag_cal_dt_s=.005f;
 
 static u8 MagCalFlag = 0;
@@ -168,7 +169,13 @@ void Sensor_Data_Task_Proc(void const *argument) {
             }
         }
         if ((uint32_t)(now-last_mag)>=UAV_IMU_MAG_PERIOD_MS) {
-            last_mag=now; ReadMagData(&test_mag); mag_sample_us=platform_micros();
+            last_mag=now;
+            float field[3]; int status=uav_sensor_read_mag(field);
+            if (status==1) {
+                test_mag=(mag_raw_data_t){field[0],field[1],field[2]};
+                mag_sample_us=platform_micros(); mag_fresh_samples++;
+            } else if (status<0) mag_read_errors++;
+            else mag_not_ready++;
             if (AK8975Flag && mag_retries<4 && (uint32_t)(now-last_mag_retry)>=500u) {
                 last_mag_retry=now; mag_retries++; AK8975Flag=DrvAK8975Check();
                 SensorError=Bmi088Init_Flag || AK8975Flag || startup_gyro.failed;
@@ -253,6 +260,14 @@ void Sensor_Data_Task_Proc(void const *argument) {
                      (unsigned long)imu_read_errors,(unsigned long)imu_pipeline.stats.timing_resets,
                      (unsigned long)imu_pipeline.stats.filter_resets,(unsigned)(imu_fusion.accel_weight*1000),
                      (unsigned)imu_fusion.mag_used,(unsigned long)imu_fusion.accel_rejected,(unsigned long)imu_fusion.mag_rejected);
+            uint8_t st1,st2; uav_sensor_mag_status(&st1,&st2);
+            uav_logf("INFO","HEADING","reason=%u innov_mdeg=%ld weight=%u norm_milli_uT=%ld horiz_milli_uT=%ld online_bias_mrad/s=%ld,%ld,%ld mag_fresh=%lu pending=%lu errors=%lu ST1=0x%02x ST2=0x%02x",
+                     (unsigned)imu_fusion.mag_reason,(long)(imu_fusion.mag_innovation_rad*57295.77951f),
+                     (unsigned)(imu_fusion.mag_weight*1000),(long)(imu_fusion.mag_norm_ut*1000),
+                     (long)(imu_fusion.mag_horizontal_ut*1000),(long)(imu_fusion.gyro_bias[0]*1000),
+                     (long)(imu_fusion.gyro_bias[1]*1000),(long)(imu_fusion.gyro_bias[2]*1000),
+                     (unsigned long)mag_fresh_samples,(unsigned long)mag_not_ready,(unsigned long)mag_read_errors,
+                     (unsigned)st1,(unsigned)st2);
         }
     }
 }
@@ -465,8 +480,11 @@ float exInt = 0, eyInt = 0, ezInt = 0; // scaled integral error
 
 int AHRS_Mahony_Update(_imuData_all imu, _ahrs_data *attitude) {
     const float mag[3]={imu.mag.x,imu.mag.y,imu.mag.z};
+    flight_snapshot_t flight; flight_snapshot_read(&flight);
+    int mag_permissions=!AK8975Flag ? UAV_FUSION_MAG_AVAILABLE:0;
+    if (flight.state==0) mag_permissions|=UAV_FUSION_ALLOW_MAG_RECOVERY;
     if (uav_fusion_step(&imu_fusion,imu_frame.acc,imu_frame.gyro_average,mag,
-                        platform_micros(),mag_sample_us,!AK8975Flag,imu_frame.dt_s)!=0)
+                        platform_micros(),mag_sample_us,mag_permissions,imu_frame.dt_s)!=0)
         return -1;
     attitude->q0=imu_fusion.q[0]; attitude->q1=imu_fusion.q[1];
     attitude->q2=imu_fusion.q[2]; attitude->q3=imu_fusion.q[3];

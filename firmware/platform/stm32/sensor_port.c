@@ -13,6 +13,8 @@ static uint8_t observed_ids[4], observed_mask;
 static unsigned selected_device = 4;
 static uint8_t transaction_command, transaction_id, transaction_has_id;
 static uint16_t transaction_position;
+static uint8_t mag_pending, mag_st1, mag_st2;
+static uint32_t mag_trigger_ms;
 /* Observe the driver's real read rather than inserting a second ID request.
  * BMI088 accel has one dummy byte; the other three checks do not. */
 static void observe_byte(uint8_t tx, uint8_t rx, int received) {
@@ -105,6 +107,46 @@ int uav_sensor_read_imu(float acc[3], float gyro[3]) {
     uav_sensor_select(1,0);
     if (status!=HAL_OK) return -1;
     return uav_imu_decode_bmi088(acc_rx,gyro_rx,acc,gyro);
+}
+static int magnetic_transaction(uint8_t *tx, uint8_t *rx, uint16_t count) {
+    uav_sensor_select(2,1);
+    HAL_StatusTypeDef status=HAL_SPI_TransmitReceive(&hspi2,tx,rx,count,2);
+    uav_sensor_select(2,0);
+    return status==HAL_OK ? 0:-1;
+}
+static int magnetic_trigger(void) {
+    uint8_t tx[2]={0x0a,0x01},rx[2];
+    if (magnetic_transaction(tx,rx,2)) { mag_pending=0; return -1; }
+    mag_trigger_ms=HAL_GetTick(); mag_pending=1;
+    return 0;
+}
+void uav_sensor_mag_status(uint8_t *st1, uint8_t *st2) {
+    if (st1) *st1=mag_st1;
+    if (st2) *st2=mag_st2;
+}
+int uav_sensor_read_mag(float mag[3]) {
+    if (!mag) return -1;
+    if (!mag_pending) return magnetic_trigger() ? -1:0;
+    uint8_t status_tx[2]={0x82,0},status_rx[2];
+    if (magnetic_transaction(status_tx,status_rx,2)) { mag_pending=0; return -1; }
+    mag_st1=status_rx[1];
+    if (!(mag_st1&1u)) {
+        /* Conversion is polled without blocking the inertial loop. */
+        if ((uint32_t)(HAL_GetTick()-mag_trigger_ms)>100u) {
+            magnetic_trigger(); return -1;
+        }
+        return 0;
+    }
+    uint8_t tx[8]={0x83},rx[8];
+    if (magnetic_transaction(tx,rx,8)) { mag_pending=0; return -1; }
+    mag_st2=rx[7]; /* Final status read also releases the sensor data latch. */
+    float field[3];
+    int result=uav_imu_decode_ak8975(rx+1,field);
+    mag_pending=0;
+    if (magnetic_trigger()) return -1;
+    if (result) return -1;
+    for (unsigned i=0;i<3;i++) mag[i]=field[i];
+    return 1;
 }
 void uav_device_key_scan(uint8_t *key) {
     *key = HAL_GPIO_ReadPin(UAV_KEY_PORT, UAV_KEY1_PIN) == GPIO_PIN_RESET   ? 1

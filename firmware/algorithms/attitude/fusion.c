@@ -33,7 +33,7 @@ int uav_fusion_init(uav_fusion_t *s, const uav_fusion_config_t *c) {
         !isfinite(c->mag_innovation_rad) || c->mag_innovation_rad <= 0 || !c->mag_timeout_us || !c->mag_recovery_samples)
         return -1;
     memset(s,0,sizeof(*s)); s->config=*c; s->q[0]=1;
-    return 0;
+    return uav_biquad_configure(&s->mag_filter,c->mag_sample_hz,c->mag_cutoff_hz);
 }
 int uav_fusion_step(uav_fusion_t *s, const float a[3], const float g[3], const float m[3],
                     uint32_t now, uint32_t mag_us, int available, float dt) {
@@ -43,10 +43,15 @@ int uav_fusion_step(uav_fusion_t *s, const float a[3], const float g[3], const f
     }
     float an=vector_finite(a) ? norm(a) : 0;
     float mn=vector_finite(m) ? norm(m) : 0;
-    int mag_good=available && (uint32_t)(now-mag_us)<=s->config.mag_timeout_us &&
+    int mag_good=(available&UAV_FUSION_MAG_AVAILABLE) && (uint32_t)(now-mag_us)<=s->config.mag_timeout_us &&
         mn>=s->config.mag_min_ut && mn<=s->config.mag_max_ut && s->config.mag_gain>0;
+    s->mag_norm_ut=mn;
+    s->mag_reason=!(available&UAV_FUSION_MAG_AVAILABLE) ? UAV_MAG_MISSING :
+        (uint32_t)(now-mag_us)>s->config.mag_timeout_us ? UAV_MAG_STALE : !mag_good ? UAV_MAG_RANGE : UAV_MAG_OK;
     if (mag_good && s->mag_reference_ut>0 &&
-        fabsf(mn/s->mag_reference_ut-1)>s->config.mag_relative_tolerance) mag_good=0;
+        fabsf(mn/s->mag_reference_ut-1)>s->config.mag_relative_tolerance) {
+        mag_good=0; s->mag_reason=UAV_MAG_FIELD_CHANGE;
+    }
     if (!s->initialized) {
         if (!isfinite(an) || fabsf(an/s->config.gravity_m_s2-1)>.2f) return -1;
         float r=atan2f(a[1],a[2]), p=atan2f(-a[0],sqrtf(a[1]*a[1]+a[2]*a[2])), y=0;
@@ -63,6 +68,9 @@ int uav_fusion_step(uav_fusion_t *s, const float a[3], const float g[3], const f
         if (mag_good) {
             s->mag_reference_ut=mn; s->mag_good_samples=s->config.mag_recovery_samples;
             s->mag_weight=1; s->mag_used=1; s->last_mag_us=mag_us; s->have_mag_timestamp=1;
+            rotate(s->q,m,s->mag_earth);
+            float seeded[3]; uav_biquad_apply(&s->mag_filter,s->mag_earth,seeded);
+            s->mag_horizontal_ut=hypotf(s->mag_earth[0],s->mag_earth[1]);
         }
         output_euler(s);
         return 0;
@@ -77,35 +85,57 @@ int uav_fusion_step(uav_fusion_t *s, const float a[3], const float g[3], const f
         correction[1]=(a[2]*down[0]-a[0]*down[2])/an*s->config.accel_gain*s->accel_weight;
         correction[2]=(a[0]*down[1]-a[1]*down[0])/an*s->config.accel_gain*s->accel_weight;
     } else s->accel_rejected++;
+    float tilt_correction[3]; memcpy(tilt_correction,correction,sizeof(tilt_correction));
     float heading=0;
     if (mag_good) {
         float field[3]; rotate(q,m,field);
-        heading=atan2f(field[1],field[0]);
-        if (hypotf(field[0],field[1])<mn*.05f || fabsf(heading)>s->config.mag_innovation_rad) mag_good=0;
+        s->mag_horizontal_ut=hypotf(field[0],field[1]);
+        if (s->mag_horizontal_ut<mn*.05f) { mag_good=0; s->mag_reason=UAV_MAG_VERTICAL; }
+        else if (!s->have_mag_timestamp || mag_us!=s->last_mag_us) {
+            /* Filter the world-frame innovation vector only on fresh magnetic
+             * samples, so real body rotation is carried by the gyroscope. */
+            uav_biquad_apply(&s->mag_filter,field,s->mag_earth);
+            if (s->mag_good_samples<s->config.mag_recovery_samples) s->mag_good_samples++;
+            s->last_mag_us=mag_us; s->have_mag_timestamp=1;
+        }
+        heading=atan2f(s->mag_earth[1],s->mag_earth[0]);
+        /* Gate the unsmoothed innovation too: smoothing must not conceal a
+         * sudden magnetic jump while armed. */
+        int large=fabsf(atan2f(field[1],field[0]))>s->config.mag_innovation_rad ||
+                  fabsf(heading)>s->config.mag_innovation_rad;
+        int stationary=norm(g)<.05f && s->accel_weight>.8f;
+        if (large && (!(available&UAV_FUSION_ALLOW_MAG_RECOVERY) || !stationary)) {
+            mag_good=0; s->mag_reason=UAV_MAG_INNOVATION; s->mag_good_samples=0;
+        }
     }
     s->mag_innovation_rad=heading;
     if (!mag_good) {
         s->mag_good_samples=0; s->mag_weight=0; s->mag_used=0;
-        if (available) s->mag_rejected++;
+        uav_biquad_reset(&s->mag_filter);
+        if (available&UAV_FUSION_MAG_AVAILABLE) s->mag_rejected++;
     } else {
-        if (!s->have_mag_timestamp || mag_us!=s->last_mag_us) {
-            if (s->mag_good_samples<s->config.mag_recovery_samples) s->mag_good_samples++;
-            s->last_mag_us=mag_us; s->have_mag_timestamp=1;
-        }
         if (s->mag_good_samples>=s->config.mag_recovery_samples) {
             s->mag_weight=limit(s->mag_weight+dt,0,1); /* One-second reacquisition ramp. */
             s->mag_used=1;
             if (!s->mag_reference_ut) s->mag_reference_ut=mn;
             s->mag_reference_ut+=.01f*dt*(mn-s->mag_reference_ut);
-            float yaw_correction=limit(-heading*s->config.mag_gain,-.35f,.35f)*s->mag_weight;
+            float yaw_correction=limit(-heading*s->config.mag_gain,-.15f,.15f)*s->mag_weight;
             for (unsigned i=0;i<3;i++) correction[i]+=down[i]*yaw_correction;
-        }
+        } else s->mag_reason=UAV_MAG_RECOVERING;
     }
     /* Freeze online bias during rapid rotation or missing attitude references. */
-    if (norm(g)<.175f && (s->accel_weight>.5f || s->mag_used))
+    if (norm(g)<.175f && s->accel_weight>.5f)
         for (unsigned i=0;i<3;i++)
-            s->gyro_bias[i]=limit(s->gyro_bias[i]+correction[i]*s->config.bias_gain*dt,
+            s->gyro_bias[i]=limit(s->gyro_bias[i]+tilt_correction[i]*s->config.bias_gain*dt,
                                   -s->config.bias_limit_rad_s,s->config.bias_limit_rad_s);
+    /* Gravity cannot observe rotation about Down. Never let magnetic noise
+     * learn a yaw-rate offset that would keep spinning after mag rejection. */
+    float unobservable=0;
+    for (unsigned i=0;i<3;i++) unobservable+=s->gyro_bias[i]*down[i];
+    for (unsigned i=0;i<3;i++) s->gyro_bias[i]-=unobservable*down[i];
+    float peak=fmaxf(fabsf(s->gyro_bias[0]),fmaxf(fabsf(s->gyro_bias[1]),fabsf(s->gyro_bias[2])));
+    if (peak>s->config.bias_limit_rad_s && peak>0)
+        for (unsigned i=0;i<3;i++) s->gyro_bias[i]*=s->config.bias_limit_rad_s/peak;
     float angle[3],theta2=0;
     for (unsigned i=0;i<3;i++) { angle[i]=(g[i]+s->gyro_bias[i]+correction[i])*dt; theta2+=angle[i]*angle[i]; }
     float theta=sqrtf(theta2),scale=theta<1e-4f ? .5f-theta2/48 : sinf(theta*.5f)/theta;

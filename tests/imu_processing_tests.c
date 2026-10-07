@@ -3,6 +3,7 @@
 #include "gyro_calibration.h"
 #include "imu_processing_config.h"
 #include "imu_calibration_config.h"
+#include "imu_sample_decode.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -133,8 +134,66 @@ static void fusion_tests(void) {
     assert(uav_fusion_step(&fusion,tilt,zero,zero,0,0,0,.005f)==0);
     assert(fabsf(fusion.roll_deg-30)<.01f); /* Startup uses measured tilt, not identity. */
 }
+static void yaw_dropout_regression(void) {
+    uav_fusion_t f;
+    assert(uav_fusion_init(&f,&uav_board_fusion)==0);
+    assert(uav_fusion_step(&f,gravity,zero,north,0,0,1,.005f)==0);
+    /* Reproduce the live state: artificial +0.016rad/s yaw correction remains
+     * after the magnetic reference drops out, with the board physically still. */
+    f.gyro_bias[2]=.016f;
+    float before=f.yaw_deg;
+    for (unsigned n=1;n<=1000;n++)
+        assert(uav_fusion_step(&f,gravity,zero,zero,n*5000u,0,0,.005f)==0);
+    assert(fabsf(f.yaw_deg-before)<.01f);
+}
+static void magnetic_decode_tests(void) {
+    uint8_t reply[7]={100,0,156,255,20,0,0};
+    float mag[3]={99,99,99};
+    assert(uav_imu_decode_ak8975(reply,mag)==0);
+    assert(fabsf(mag[0]-30)<1e-5f && fabsf(mag[1]-30)<1e-5f && fabsf(mag[2]+6)<1e-5f);
+    float last[3]; memcpy(last,mag,sizeof(last));
+    reply[6]=4;
+    assert(uav_imu_decode_ak8975(reply,mag)==-1 && memcmp(last,mag,sizeof(last))==0);
+    reply[6]=8;
+    assert(uav_imu_decode_ak8975(reply,mag)==-1 && memcmp(last,mag,sizeof(last))==0);
+}
+static float wrap_degrees(float value) {
+    while (value>180) value-=360;
+    while (value < -180) value+=360;
+    return value;
+}
+static void yaw_motion_and_recovery_tests(void) {
+    uav_fusion_t f;
+    assert(uav_fusion_init(&f,&uav_board_fusion)==0);
+    assert(uav_fusion_step(&f,gravity,zero,north,0,0,1,.005f)==0);
+    const float spin[3]={0,0,1};
+    float mag[3]; uint32_t stamp=0;
+    for (unsigned n=1;n<=2000;n++) {
+        if (n%4==0) stamp=n*5000;
+        float yaw=stamp*1e-6f;
+        mag[0]=25*cosf(yaw); mag[1]=-25*sinf(yaw); mag[2]=40;
+        assert(uav_fusion_step(&f,gravity,spin,mag,n*5000,stamp,1,.005f)==0);
+    }
+    assert(fabsf(wrap_degrees(f.yaw_deg+572.957795f))<1.0f);
+    assert(fabsf(f.gyro_bias[2])<1e-6f); /* Magnetic correction never learns yaw-rate bias. */
+    const float east[3]={0,25,40};
+    assert(uav_fusion_init(&f,&uav_board_fusion)==0);
+    assert(uav_fusion_step(&f,gravity,zero,north,0,0,1,.005f)==0);
+    for (unsigned n=1;n<=100;n++)
+        assert(uav_fusion_step(&f,gravity,zero,east,n*5000,n*5000,1,.005f)==0);
+    assert(!f.mag_used && fabsf(f.yaw_deg)<1e-5f); /* Large innovation cannot reset an armed heading. */
+    float previous=f.yaw_deg;
+    for (unsigned n=101;n<=4100;n++) {
+        assert(uav_fusion_step(&f,gravity,zero,east,n*5000,(n/4)*20000,3,.005f)==0);
+        assert(fabsf(wrap_degrees(f.yaw_deg-previous))<.06f);
+        previous=f.yaw_deg;
+    }
+    assert(f.mag_used && fabsf(wrap_degrees(f.yaw_deg-90))<3);
+}
 int main(void) {
     filter_tests(); pipeline_tests(); calibration_tests(); fusion_tests();
+    yaw_dropout_regression();
+    magnetic_decode_tests(); yaw_motion_and_recovery_tests();
     puts("PASS IMU: seeded filters, anti-noise calibration, bounded failure, real dt, gaps/wrap, magnetic recovery and quaternion rollback");
     return 0;
 }

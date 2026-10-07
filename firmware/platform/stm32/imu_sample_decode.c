@@ -11,3 +11,15 @@ int uav_imu_decode_bmi088(const uint8_t a[8], const uint8_t g[7], float acc[3], 
     }
     return 0;
 }
+int uav_imu_decode_ak8975(const uint8_t reply[7], float mag[3]) {
+    if (!reply || !mag || (reply[6]&0x0cu)) return -1;
+    float values[3];
+    for (unsigned i=0;i<3;i++) {
+        uint16_t word=(uint16_t)reply[i*2] | ((uint16_t)reply[i*2+1]<<8);
+        int32_t raw=word>=32768u ? (int32_t)word-65536 : word;
+        if (raw < -4096 || raw > 4095) return -1;
+        values[i]=raw*.3f*(i==0 ? 1.0f:-1.0f);
+    }
+    for (unsigned i=0;i<3;i++) mag[i]=values[i];
+    return 0;
+}
