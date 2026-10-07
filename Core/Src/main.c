@@ -30,6 +30,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 extern void app_fatal(void);
+#include "boot_log.h"
 #include "pc_proc.h"
 #include "usart.h"
 #include "usb_otg.h"
@@ -101,14 +102,14 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  app_boot_log_hal();
   /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  app_boot_log_clocks();
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -134,6 +135,7 @@ int main(void)
   MX_USB_OTG_FS_HCD_Init();
   MX_TIM12_Init();
   /* USER CODE BEGIN 2 */
+  app_boot_log_peripherals();
   HAL_TIM_PWM_Start(&htim1,TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim1,TIM_CHANNEL_2);
 	HAL_TIM_PWM_Start(&htim1,TIM_CHANNEL_3);
@@ -155,7 +157,11 @@ int main(void)
 	//HAL_UARTEx_ReceiveToIdle_DMA(&huart4, uart4RX, 100)
 	//spi cs脚初始化
 
-	if(W25QXX_Init()!=0)Error_Handler();   //flash初始化
+    {
+        /* Preserve the diagnostic bypass; record the actual return status. */
+        int flash_result = W25QXX_Init();
+        app_boot_log_flash(flash_result);
+    }   //flash初始化
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in freertos.c) */

@@ -74,6 +74,7 @@ set(FIRMWARE_SOURCES
   firmware/algorithms/math/src/rotation.c
   firmware/algorithms/math/src/vector3.c
   firmware/app/startup.c
+  firmware/app/boot_log.c
   firmware/app/tasks/serial_task.c
   firmware/drivers/motor/uav_actuator.c
   firmware/os/flight_snapshot.c

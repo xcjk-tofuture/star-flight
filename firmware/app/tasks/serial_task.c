@@ -10,6 +10,7 @@
 #include "flight_snapshot.h"
 #include "log_service.h"
 #include "uav_events.h"
+#include "boot_log.h"
 osThreadId PCTaskHandle;
 typedef struct {
     uint16_t length;
@@ -81,6 +82,8 @@ void PC_Task_Proc(void const *argument) {
     rx_packet_t packet;
     star_frame_t request = {0}, event;
     uint32_t last_telemetry = platform_millis(), now;
+    uint32_t started_ms = last_telemetry;
+    uint8_t health_reported = 0;
     uint8_t pending_log[UAV_LOG_FRAME_BYTES];
     size_t pending_log_length = 0;
     (void)argument;
@@ -88,6 +91,7 @@ void PC_Task_Proc(void const *argument) {
         vTaskDelete(NULL);
         return;
     }
+    app_boot_log_running(dispatcher.telemetry_period_ms);
     for (;;) {
         if (receive_lost) {
             taskENTER_CRITICAL();
@@ -100,6 +104,11 @@ void PC_Task_Proc(void const *argument) {
             star_parser_feed(&parser, packet.data, packet.length, platform_millis(), on_frame,
                              NULL);
         now = platform_millis();
+        if ((health_reported == 0 && (uint32_t)(now - started_ms) >= 2000u) ||
+            (health_reported == 1 && (uint32_t)(now - started_ms) >= 8000u)) {
+            app_boot_log_health();
+            health_reported++;
+        }
         star_parser_expire(&parser, now);
         if ((uint32_t)(now - last_telemetry) >= dispatcher.telemetry_period_ms) {
             request.command = STAR_CMD_STATUS;

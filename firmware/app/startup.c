@@ -8,6 +8,7 @@
 #include "shared_spi.h"
 #include "flash_proc.h"
 #include "flow_proc.h"
+#include "boot_log.h"
 extern osThreadId RGBTaskHandle;
 extern void RGB_Task_Proc(void const *argument);
 extern osThreadId KeyTaskHandle;
@@ -27,44 +28,57 @@ extern void PC_Task_Proc(void const *argument);
 extern osThreadId MotorTaskHandle;
 extern void Motor_Task_Proc(void const *argument);
 void app_tasks_init(void) {
-    if (PC_Init() != 0 || sbus_transport_init() != 0 || uav_log_init() != 0 ||
-        flow_transport_init() != 0 || uav_spi1_init() != 0 || uav_storage_init() != 0)
-        Error_Handler();
+    app_boot_resource_init("PC_RX", PC_Init, "depth=4 max_rx=100B telemetry=50ms");
+    app_boot_resource_init("SBUS_RX", sbus_transport_init, "depth=4 frame=25B timeout=100ms");
+    app_boot_resource_init("LOG", uav_log_init, "boot=8192B runtime=1024B chunk=64B");
+    app_boot_resource_init("FLOW_RX", flow_transport_init, "depth=4 frame=14B timeout=100ms");
+    app_boot_resource_init("SPI1_MUTEX", uav_spi1_init, "recursive priority_inheritance=1");
+    app_boot_resource_init("STORAGE", uav_storage_init, "write_depth=2");
     osThreadDef(RGB, RGB_Task_Proc, osPriorityIdle, 0, 128);
     RGBTaskHandle = osThreadCreate(osThread(RGB), NULL);
     if (!RGBTaskHandle)
         Error_Handler();
+    app_boot_log_task("RGB", RGBTaskHandle, 128);
     osThreadDef(Key, Key_Task_Proc, osPriorityIdle, 0, 128);
     KeyTaskHandle = osThreadCreate(osThread(Key), NULL);
     if (!KeyTaskHandle)
         Error_Handler();
+    app_boot_log_task("Key", KeyTaskHandle, 128);
     osThreadDef(Sbus, Sbus_Uart6_Task_Proc, osPriorityAboveNormal, 0, 256);
     SbusUart6TaskHandle = osThreadCreate(osThread(Sbus), NULL);
     if (!SbusUart6TaskHandle)
         Error_Handler();
+    app_boot_log_task("Sbus", SbusUart6TaskHandle, 256);
     /* Keep the known working stack budget for rendering and the FPU context. */
     osThreadDef(OLED, OLED_Task_Proc, osPriorityIdle, 0, 1024);
     OLEDTaskHandle = osThreadCreate(osThread(OLED), NULL);
     if (!OLEDTaskHandle)
         Error_Handler();
+    app_boot_log_task("OLED", OLEDTaskHandle, 1024);
     osThreadDef(Sensor, Sensor_Data_Task_Proc, osPriorityRealtime, 0, 768);
     SensorDataTaskHandle = osThreadCreate(osThread(Sensor), NULL);
     if (!SensorDataTaskHandle)
         Error_Handler();
+    app_boot_log_task("Sensor", SensorDataTaskHandle, 768);
     osThreadDef(Flash, Flash_Task_Proc, osPriorityIdle, 0, 768);
     FlashTaskHandle = osThreadCreate(osThread(Flash), NULL);
     if (!FlashTaskHandle)
         Error_Handler();
+    app_boot_log_task("Flash", FlashTaskHandle, 768);
     osThreadDef(Flow, Flow_Task_Proc, osPriorityIdle, 0, 128);
     FlowTaskHandle = osThreadCreate(osThread(Flow), NULL);
     if (!FlowTaskHandle)
         Error_Handler();
+    app_boot_log_task("Flow", FlowTaskHandle, 128);
     osThreadDef(PC, PC_Task_Proc, osPriorityNormal, 0, 768);
     PCTaskHandle = osThreadCreate(osThread(PC), NULL);
     if (!PCTaskHandle)
         Error_Handler();
+    app_boot_log_task("PC", PCTaskHandle, 768);
     osThreadDef(Control, Motor_Task_Proc, osPriorityHigh, 0, 512);
     MotorTaskHandle = osThreadCreate(osThread(Control), NULL);
     if (!MotorTaskHandle)
         Error_Handler();
+    app_boot_log_task("Control", MotorTaskHandle, 512);
+    app_boot_log_scheduler();
 }
