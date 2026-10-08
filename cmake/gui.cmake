@@ -1,4 +1,5 @@
 list(APPEND FIRMWARE_SOURCES
+  firmware/gui/gui_tuning.c
   firmware/gui/gui_canvas.c
   firmware/gui/gui_menu.c
   firmware/gui/gui_font_assets.c

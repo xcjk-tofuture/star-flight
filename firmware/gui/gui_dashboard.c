@@ -12,16 +12,17 @@ enum { MENU_CALIBRATION = 100, MENU_HELP, MENU_BACK, MENU_CONFIRM, MENU_CANCEL,
        MENU_REMOTE_START, MENU_REMOTE_SAVE, MENU_MAG_START, MENU_ACCEL_START,
        MENU_SETTINGS, MENU_SOUND, MENU_SETTINGS_SAVE, MENU_SETTINGS_DEFAULTS,
        MENU_SOUND_NORMAL, MENU_SOUND_QUIET, MENU_SOUND_MUTED,
-       MENU_PARAMETERS, MENU_HEATER_TOGGLE, MENU_HEATER_MONITOR,
+       MENU_PARAMETERS,
        MENU_EDIT_INCREASE, MENU_EDIT_DECREASE, MENU_EDIT_DONE, MENU_EDIT_CANCEL,
+       MENU_TUNING_HEATER, MENU_TUNING_INNER, MENU_TUNING_OUTER, MENU_TUNING_SPEED, MENU_TUNING_HEIGHT,
        MENU_FIELD_BASE=200 };
 enum { ROOT_CALIBRATION=7, ROOT_SETTINGS=8, ROOT_PARAMETERS=9, ROOT_HELP=10 };
-enum { MESSAGE_NONE, MESSAGE_NO_RC, MESSAGE_FLASH, MESSAGE_MAG, MESSAGE_IMU, MESSAGE_STATE, MESSAGE_ACTIVE };
+enum { MESSAGE_NONE, MESSAGE_NO_RC, MESSAGE_FLASH, MESSAGE_MAG, MESSAGE_IMU, MESSAGE_STATE, MESSAGE_ACTIVE, MESSAGE_MODULE };
 static const gui_menu_item_t root_items[] = {
     {"飞行总览", 1}, {"三维姿态", 2}, {"趋势曲线", 3}, {"传感数据", 4},
     {"遥控通道", 5}, {"光流测距", 6}, {"系统诊断", 7},
     {"校准管理", MENU_CALIBRATION}, {"系统设置", MENU_SETTINGS},
-    {"参数调整", MENU_PARAMETERS}, {"按键说明", MENU_HELP}
+    {"参数控制", MENU_PARAMETERS}, {"按键说明", MENU_HELP}
 };
 static const gui_menu_item_t calibration_start[] = {
     {"遥控校准", MENU_REMOTE_START}, {"磁力校准", MENU_MAG_START},
@@ -37,11 +38,9 @@ static const gui_menu_item_t settings_items[] = {
     {"恢复默认", MENU_SETTINGS_DEFAULTS}, {"返回菜单", MENU_BACK}
 };
 static const gui_menu_item_t parameter_items[] = {
-    {"恒温控制", MENU_HEATER_TOGGLE}, {"目标温度", MENU_FIELD_BASE+UAV_SETTING_HEATER_TARGET},
-    {"功率上限", MENU_FIELD_BASE+UAV_SETTING_HEATER_LIMIT}, {"比例参数", MENU_FIELD_BASE+UAV_SETTING_HEATER_KP},
-    {"积分参数", MENU_FIELD_BASE+UAV_SETTING_HEATER_KI}, {"微分参数", MENU_FIELD_BASE+UAV_SETTING_HEATER_KD},
-    {"恒温监控", MENU_HEATER_MONITOR}, {"保存参数", MENU_SETTINGS_SAVE},
-    {"恢复默认", MENU_SETTINGS_DEFAULTS}, {"返回菜单", MENU_BACK}
+    {"IMU恒温", MENU_TUNING_HEATER}, {"内环控制", MENU_TUNING_INNER},
+    {"外环控制", MENU_TUNING_OUTER}, {"速度控制", MENU_TUNING_SPEED},
+    {"高度控制", MENU_TUNING_HEIGHT}, {"返回菜单", MENU_BACK}
 };
 static const gui_menu_item_t edit_items[] = {
     {"增加数值", MENU_EDIT_INCREASE}, {"减少数值", MENU_EDIT_DECREASE},
@@ -63,6 +62,12 @@ static void open_parameters(gui_dashboard_t *d, unsigned selection) {
     d->screen=GUI_SCREEN_PARAMETERS; d->message_return_screen=GUI_SCREEN_PARAMETERS;
     gui_menu_open(&d->menu,parameter_items,sizeof(parameter_items)/sizeof(parameter_items[0]),(uint8_t)selection);
 }
+static gui_tuning_model_t tuning_model(const gui_model_t *m) {
+    return (gui_tuning_model_t){.values=m->settings_value,.now_ms=m->now_ms,.actual=m->heater_temperature,
+        .setpoint=m->settings_value[UAV_SETTING_HEATER_TARGET]*.1f,.output=m->heater_duty,.valid=m->heater_temperature_valid,
+        .fault=m->heater_fault,.dirty=m->settings_dirty,.save_state=m->settings_save_state,
+        .enabled=(uint8_t)m->settings_value[UAV_SETTING_HEATER_ENABLED]};
+}
 static void finish_edit(gui_dashboard_t *d) {
     if (d->edit_return_screen==GUI_SCREEN_PARAMETERS) open_parameters(d,d->edit_selection);
     else open_settings(d,d->edit_selection);
@@ -78,7 +83,8 @@ static void open_calibration(gui_dashboard_t *d, const gui_model_t *m) {
 }
 static void close_message(gui_dashboard_t *d, const gui_model_t *m) {
     if (d->message_return_screen==GUI_SCREEN_SETTINGS) open_settings(d,2);
-    else if (d->message_return_screen==GUI_SCREEN_PARAMETERS) open_parameters(d,7);
+    else if (d->message_return_screen==GUI_SCREEN_PARAMETERS) open_parameters(d,d->parameter_selection);
+    else if (d->message_return_screen==GUI_SCREEN_TUNING) d->screen=GUI_SCREEN_TUNING;
     else open_calibration(d,m);
 }
 static const char *status(const gui_model_t *m) {
@@ -139,9 +145,14 @@ unsigned gui_dashboard_view_count(uint8_t page) {
 }
 void gui_dashboard_init(gui_dashboard_t *d) {
     memset(d, 0, sizeof(*d)); d->page = GUI_PAGE_OVERVIEW; open_root(d, 0);
+    gui_tuning_init(&d->tuning);
     d->screen=GUI_SCREEN_PAGE;
 }
 void gui_dashboard_set_page(gui_dashboard_t *d, uint8_t page) {
+    if (page==GUI_PAGE_HEATER) {
+        d->page=page; d->screen=GUI_SCREEN_TUNING; d->message_return_screen=GUI_SCREEN_TUNING;
+        gui_tuning_open(&d->tuning,&gui_tuning_heater); return;
+    }
     if ((page >= 1 && page <= GUI_PAGE_COUNT) || page == GUI_PAGE_REMOTE_CAL || page == GUI_PAGE_MAG_CAL || page == GUI_PAGE_ACCEL_CAL || page==GUI_PAGE_HEATER) {
         d->page = page; d->view = 0; d->screen = GUI_SCREEN_PAGE;
     }
@@ -153,6 +164,35 @@ void gui_dashboard_next_view(gui_dashboard_t *d) {
     d->view = (uint8_t)((d->view + 1u) % gui_dashboard_view_count(d->page));
 }
 gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const gui_model_t *m) {
+    if (d->screen==GUI_SCREEN_TUNING) {
+        unsigned event=input==GUI_INPUT_NEXT ? GUI_TUNE_NEXT:input==GUI_INPUT_PREVIOUS ? GUI_TUNE_PREVIOUS
+            :input==GUI_INPUT_ENTER ? GUI_TUNE_ENTER:input==GUI_INPUT_BACK ? GUI_TUNE_BACK
+            :input==GUI_INPUT_CALIBRATION || input==GUI_INPUT_NEXT_VIEW || input==GUI_INPUT_NEXT_PAGE ? GUI_TUNE_SWITCH:0;
+        unsigned field=gui_tuning_field(&d->tuning);
+        if (input==GUI_INPUT_ENTER && !d->tuning.editing && m->state!=0 &&
+            (d->tuning.page==0 || d->tuning.selected==1 || d->tuning.selected>=2 ||
+             !m->settings_value[UAV_SETTING_HEATER_ENABLED])) {
+            d->message=MESSAGE_STATE; d->screen=GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE;
+        }
+        d->edit_field=(uint8_t)field;
+        gui_tuning_model_t model=tuning_model(m);
+        unsigned result=gui_tuning_input(&d->tuning,event,&model);
+        d->edit_original=d->tuning.original;
+        if (result==GUI_TUNE_EXIT) { open_parameters(d,0); return GUI_COMMAND_NONE; }
+        if (result==GUI_TUNE_INCREASE) return GUI_COMMAND_SETTING_INCREASE;
+        if (result==GUI_TUNE_DECREASE) return GUI_COMMAND_SETTING_DECREASE;
+        if (result==GUI_TUNE_CANCEL) return GUI_COMMAND_SETTING_CANCEL;
+        if (result==GUI_TUNE_TOGGLE) return GUI_COMMAND_HEATER_TOGGLE;
+        if (result==GUI_TUNE_DEFAULTS) return GUI_COMMAND_HEATER_DEFAULTS;
+        if (result==GUI_TUNE_SAVE) {
+            if (m->settings_save_state==UAV_SETTINGS_SAVING) return GUI_COMMAND_NONE;
+            d->message=m->state!=0 ? MESSAGE_STATE:!m->flash_ok ? MESSAGE_FLASH
+                :m->imu_calibrating || m->mag_calibrating || m->accel_calibrating || m->remote_calibrating ? MESSAGE_ACTIVE:MESSAGE_NONE;
+            if (d->message) d->screen=GUI_SCREEN_MESSAGE;
+            else return GUI_COMMAND_SETTINGS_SAVE;
+        }
+        return GUI_COMMAND_NONE;
+    }
     if (d->screen == GUI_SCREEN_CALIBRATION)
         d->menu.items = m->remote_calibrating ? calibration_save : calibration_start;
     if (input == GUI_INPUT_NEXT_PAGE) { gui_dashboard_next_page(d); return GUI_COMMAND_NONE; }
@@ -169,7 +209,6 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
     }
     if (input == GUI_INPUT_BACK) {
         if (d->screen==GUI_SCREEN_EDIT) { finish_edit(d); return GUI_COMMAND_SETTING_CANCEL; }
-        if (d->screen==GUI_SCREEN_PAGE && d->page==GUI_PAGE_HEATER) { open_parameters(d,6); return GUI_COMMAND_NONE; }
         if (d->screen == GUI_SCREEN_PAGE && d->page == GUI_PAGE_MAG_CAL && m->mag_calibrating) {
             if (m->mag_calibration_step >= 2) return GUI_COMMAND_NONE;
             open_calibration(d, m); return GUI_COMMAND_MAG_CANCEL;
@@ -178,7 +217,7 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
             if (m->accel_cal_phase>=UAV_ACCEL_SAVE) return GUI_COMMAND_NONE;
             open_calibration(d,m); return GUI_COMMAND_ACCEL_CANCEL;
         }
-        if (d->screen == GUI_SCREEN_ROOT) d->screen = GUI_SCREEN_PAGE;
+        if (d->screen == GUI_SCREEN_ROOT) d->screen = d->page==GUI_PAGE_HEATER ? GUI_SCREEN_TUNING:GUI_SCREEN_PAGE;
         else if (d->screen == GUI_SCREEN_SOUND) open_settings(d,0);
         else if (d->screen == GUI_SCREEN_SETTINGS) open_root(d,ROOT_SETTINGS);
         else if (d->screen == GUI_SCREEN_PARAMETERS) open_root(d,ROOT_PARAMETERS);
@@ -226,6 +265,7 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
         else if (action == MENU_HELP) { d->screen = GUI_SCREEN_HELP; d->help_page = 0; }
     } else if (d->screen==GUI_SCREEN_SETTINGS || d->screen==GUI_SCREEN_PARAMETERS) {
         int parameters=d->screen==GUI_SCREEN_PARAMETERS;
+        if (parameters) d->parameter_selection=d->menu.selected;
         if (action==MENU_BACK) open_root(d,parameters ? ROOT_PARAMETERS:ROOT_SETTINGS);
         else if (action==MENU_SOUND) {
             d->screen=GUI_SCREEN_SOUND;
@@ -234,12 +274,11 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
             if (m->state!=0) { d->message=MESSAGE_STATE; d->screen=GUI_SCREEN_MESSAGE; }
             else return GUI_COMMAND_SETTINGS_DEFAULTS;
         }
-        else if (action==MENU_HEATER_MONITOR) gui_dashboard_set_page(d,GUI_PAGE_HEATER);
-        else if (action==MENU_HEATER_TOGGLE) {
-            if (m->state!=0 && !m->settings_value[UAV_SETTING_HEATER_ENABLED]) {
-                d->message=MESSAGE_STATE; d->screen=GUI_SCREEN_MESSAGE;
-            } else return GUI_COMMAND_HEATER_TOGGLE;
-        } else if (action>=MENU_FIELD_BASE && action<MENU_FIELD_BASE+UAV_SETTING_COUNT) {
+        else if (action==MENU_TUNING_HEATER) gui_dashboard_set_page(d,GUI_PAGE_HEATER);
+        else if (action>=MENU_TUNING_INNER && action<=MENU_TUNING_HEIGHT) {
+            d->message=MESSAGE_MODULE; d->screen=GUI_SCREEN_MESSAGE;
+        }
+        else if (action>=MENU_FIELD_BASE && action<MENU_FIELD_BASE+UAV_SETTING_COUNT) {
             unsigned field=action-MENU_FIELD_BASE;
             if (field>=UAV_SETTING_HEATER_ENABLED && m->state!=0) {
                 d->message=MESSAGE_STATE; d->screen=GUI_SCREEN_MESSAGE;
@@ -311,6 +350,7 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
     return GUI_COMMAND_NONE;
 }
 void gui_dashboard_update(gui_dashboard_t *d, const gui_model_t *m) {
+    gui_tuning_model_t tune=tuning_model(m); gui_tuning_update(&d->tuning,&tune);
     uint32_t elapsed = (uint32_t)(m->now_ms - d->last_sample_ms);
     if (d->has_sample && elapsed < 100u) return;
     if (d->has_sample && elapsed > 500u) {
@@ -603,13 +643,21 @@ static void accel_cal(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
 }
 void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t *m) {
     gui_clear(c);
+    if (d->screen==GUI_SCREEN_TUNING) {
+        gui_tuning_model_t tune=tuning_model(m); gui_tuning_render(&d->tuning,c,&tune);
+        if (m->rc_ui_active) {
+            gui_color(c,0); gui_box(c,0,57,128,7,1); gui_color(c,1);
+            gui_text(c,1,58,!m->rc_ui_ready ? "RC CENTER STICKS FIRST":d->tuning.editing
+                ? "CH2 +/- CH8 VALUE CH1 DONE/BACK":"CH7 FIELD CH1 EDIT CH8 PAGE",GUI_FONT_TINY);
+        }
+        return;
+    }
     if (d->screen==GUI_SCREEN_SETTINGS || d->screen==GUI_SCREEN_SOUND || d->screen==GUI_SCREEN_PARAMETERS || d->screen==GUI_SCREEN_EDIT) {
         const char *badge=m->settings_save_state==UAV_SETTINGS_SAVING ? "正在保存"
             :m->settings_save_state==UAV_SETTINGS_FAILED ? "保存失败"
             :m->settings_dirty ? "未保存":"已保存";
         if (d->screen==GUI_SCREEN_SOUND) badge=sound_name(m->sound_mode);
-        if (d->screen==GUI_SCREEN_PARAMETERS && d->menu.selected==0)
-            badge=m->settings_value[UAV_SETTING_HEATER_ENABLED] ? "已开启":"已关闭";
+        if (d->screen==GUI_SCREEN_PARAMETERS) badge=d->menu.selected>0 && d->menu.selected<5 ? "未开放":"模块";
         char value[16];
         if (d->screen==GUI_SCREEN_EDIT) {
             unsigned f=d->edit_field,v=m->settings_value[f];
@@ -619,28 +667,13 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
             else snprintf(value,sizeof(value),f==UAV_SETTING_HEATER_LIMIT ? "%u%%":"%u",v);
             badge=value;
         }
-        gui_menu_render(&d->menu,c,d->screen==GUI_SCREEN_SOUND ? "声音模式":d->screen==GUI_SCREEN_PARAMETERS ? "参数调整"
+        gui_menu_render(&d->menu,c,d->screen==GUI_SCREEN_SOUND ? "声音模式":d->screen==GUI_SCREEN_PARAMETERS ? "参数控制"
             :d->screen==GUI_SCREEN_EDIT ? field_titles[d->edit_field]:"系统设置",badge,m->now_ms);
         gui_color(c,0); gui_box(c,0,57,128,7,1); gui_color(c,1);
         gui_text(c,1,58,d->screen==GUI_SCREEN_SOUND ? "QUIET: NO KEYS MUTE: ALL OFF"
             :d->screen==GUI_SCREEN_EDIT ? "CH8 VALUE / 1 SELECT 2 APPLY":"1 NEXT 2 OK HOLD1 BACK",GUI_FONT_TINY);
         remote_footer(c,d,m);
         return;
-    }
-    if (d->screen==GUI_SCREEN_PAGE && d->page==GUI_PAGE_HEATER) {
-        const char *state=m->heater_state==UAV_HEATER_OFF ? "已关闭":m->heater_state==UAV_HEATER_WAIT ? "等待数据"
-            :m->heater_state==UAV_HEATER_READY ? "恒温就绪":m->heater_state==UAV_HEATER_FAULT ? "加热异常":"正在升温";
-        header(c,"恒温监控",state);
-        gui_text(c,2,16,"TEMP / TARGET C",GUI_FONT_TINY);
-        number(c,2,24,m->heater_temperature,1,0,m->heater_temperature_valid,GUI_FONT_BODY);
-        number(c,66,24,m->heater_target,1,0,1,GUI_FONT_BODY);
-        gui_text(c,2,37,"PWM %",GUI_FONT_TINY); number(c,28,37,m->heater_duty,1,0,1,GUI_FONT_TINY);
-        gui_text(c,75,37,"FAULT",GUI_FONT_TINY); number(c,110,37,m->heater_fault,0,0,1,GUI_FONT_TINY);
-        gui_text(c,2,48,"P",GUI_FONT_TINY); number(c,10,48,m->heater_p,1,1,1,GUI_FONT_TINY);
-        gui_text(c,44,48,"I",GUI_FONT_TINY); number(c,52,48,m->heater_i,1,0,1,GUI_FONT_TINY);
-        gui_text(c,86,48,"D",GUI_FONT_TINY); number(c,94,48,m->heater_d,1,1,1,GUI_FONT_TINY);
-        gui_text(c,1,58,"HOLD1 BACK / TEMP TREND PAGE3",GUI_FONT_TINY);
-        remote_footer(c,d,m); return;
     }
     if (d->screen == GUI_SCREEN_ROOT || d->screen == GUI_SCREEN_CALIBRATION) {
         if (d->screen == GUI_SCREEN_CALIBRATION)
@@ -659,11 +692,13 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
     if (d->screen == GUI_SCREEN_MESSAGE) {
         header(c, "暂不可用", "返回");
         const char *reason = d->message == MESSAGE_STATE ? "等待锁定"
+                             : d->message==MESSAGE_MODULE ? "暂不可用"
                              : d->message==MESSAGE_ACTIVE ? "校准进行中"
                              : d->message == MESSAGE_FLASH ? "闪存异常"
                              : d->message == MESSAGE_NO_RC ? "遥控未连接"
                              : d->message == MESSAGE_MAG ? "磁场未就绪" : m->imu_cal_failed ? "校准失败" : "等待校准";
         const char *detail = d->message == MESSAGE_STATE ? "请先锁定飞控"
+                             : d->message==MESSAGE_MODULE ? "当前模块尚不可调"
                              : d->message==MESSAGE_ACTIVE ? "请先完成当前校准"
                              : d->message == MESSAGE_FLASH ? "校准数据无法保存"
                              : d->message == MESSAGE_NO_RC ? "请先连接接收机"

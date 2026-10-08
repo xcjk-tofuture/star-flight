@@ -3,6 +3,7 @@
 #include "gui_canvas.h"
 #include "gui_plot.h"
 #include "gui_menu.h"
+#include "gui_tuning.h"
 #define GUI_PAGE_COUNT 7
 #define GUI_CHART_COUNT 6
 enum {
@@ -18,10 +19,10 @@ typedef enum { GUI_COMMAND_NONE, GUI_COMMAND_REMOTE_START, GUI_COMMAND_REMOTE_SA
                GUI_COMMAND_SOUND_NORMAL, GUI_COMMAND_SOUND_QUIET, GUI_COMMAND_SOUND_MUTED,
                GUI_COMMAND_SETTINGS_SAVE, GUI_COMMAND_SETTINGS_DEFAULTS,
                GUI_COMMAND_SETTING_INCREASE, GUI_COMMAND_SETTING_DECREASE,
-               GUI_COMMAND_SETTING_CANCEL, GUI_COMMAND_HEATER_TOGGLE } gui_command_t;
+               GUI_COMMAND_SETTING_CANCEL, GUI_COMMAND_HEATER_TOGGLE, GUI_COMMAND_HEATER_DEFAULTS } gui_command_t;
 typedef enum { GUI_SCREEN_ROOT, GUI_SCREEN_PAGE, GUI_SCREEN_CALIBRATION,
                GUI_SCREEN_HELP, GUI_SCREEN_CONFIRM, GUI_SCREEN_MESSAGE,
-               GUI_SCREEN_SETTINGS, GUI_SCREEN_SOUND, GUI_SCREEN_PARAMETERS, GUI_SCREEN_EDIT } gui_screen_t;
+               GUI_SCREEN_SETTINGS, GUI_SCREEN_SOUND, GUI_SCREEN_PARAMETERS, GUI_SCREEN_EDIT, GUI_SCREEN_TUNING } gui_screen_t;
 /* Presentation-only snapshot. Units: rad, rad/s, m/s2, uT, C, Pa, flow mm/s/mm.
  * No HAL, RTOS, global flight structures, control writes or dynamic allocation. */
 typedef struct {
@@ -56,9 +57,11 @@ typedef struct {
     uint32_t last_sample_ms;
     uint8_t page, view, has_sample;
     gui_menu_t menu;
+    gui_tuning_t tuning;
     uint8_t screen, help_page, confirm_command, message, message_return_screen;
     uint8_t edit_field, edit_return_screen, edit_selection;
     uint16_t edit_original;
+    uint8_t parameter_selection;
 } gui_dashboard_t;
 void gui_dashboard_init(gui_dashboard_t *dashboard);
 void gui_dashboard_set_page(gui_dashboard_t *dashboard, uint8_t page);

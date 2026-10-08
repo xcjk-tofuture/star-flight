@@ -10,7 +10,7 @@ if ($taskCompiler) { $taskCompilerPath = $taskCompiler.Source }
 elseif (Test-Path 'C:\MinGW\bin\gcc.exe') { $taskCompilerPath = 'C:\MinGW\bin\gcc.exe' }
 else { throw 'A host GCC compiler is required for the PBM preview exporter.' }
 $taskSources = @('tools/gui-preview.c','firmware/gui/gui_canvas.c','firmware/gui/gui_font_assets.c',
-    'firmware/gui/gui_plot.c','firmware/gui/gui_scene.c','firmware/gui/gui_menu.c','firmware/gui/gui_dashboard.c',
+    'firmware/gui/gui_plot.c','firmware/gui/gui_scene.c','firmware/gui/gui_menu.c','firmware/gui/gui_dashboard.c','firmware/gui/gui_tuning.c',
     'firmware/services/parameters/settings_record.c')
 $taskSources += Get-ChildItem (Join-Path $taskRoot 'firmware/third_party/u8g2/csrc') -Filter '*.c' |
     ForEach-Object { $_.FullName }

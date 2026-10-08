@@ -31,6 +31,7 @@ static void sample(unsigned tick) {
     model.gyro[0] = .12f*sinf(t*.6f); model.gyro[1] = .08f*cosf(t*.9f); model.gyro[2] = .03f*sinf(t);
     model.mag[0] = -12+2*sinf(t); model.mag[1] = -33+cosf(t); model.mag[2] = -44;
     model.temperature_c = 34.8f+.3f*sinf(t*.2f); model.pressure_pa = 101325+15*cosf(t);
+    model.heater_temperature=36.0f+3.8f*(1-expf(-t/15))+.12f*sinf(t*.5f);
     model.flow_velocity[0] = 280*sinf(t*.7f); model.flow_velocity[1] = 120*cosf(t*.6f);
 }
 int main(int argc, char **argv) {
@@ -38,6 +39,7 @@ int main(int argc, char **argv) {
     gui_canvas_init(&canvas); gui_dashboard_init(&dashboard);
     uav_settings_values_t settings; uav_settings_defaults(&settings);
     memcpy(model.settings_value,settings.value,sizeof(model.settings_value));
+    model.settings_value[UAV_SETTING_HEATER_ENABLED]=1;
     model.heater_temperature_valid=1; model.heater_temperature=39.8f; model.heater_target=40;
     model.heater_duty=24; model.heater_p=2; model.heater_i=22; model.heater_state=UAV_HEATER_READY;
     model.attitude_valid = model.imu_ok = model.mag_ok = model.baro_ok = model.rc_connected = model.rc_raw_connected = 1;
@@ -48,7 +50,7 @@ int main(int argc, char **argv) {
         model.remote_pwm[i] = (uint16_t)(1100+i*110); model.remote_raw[i] = (uint16_t)(300+i*150);
         model.remote_min[i] = 300; model.remote_max[i] = 1700; model.mag_scale[i%3] = 1;
     }
-    for (unsigned i = 0; i < 90; i++) { sample(i); gui_dashboard_update(&dashboard, &model); }
+    for (unsigned i = 0; i < 700; i++) { sample(i); gui_dashboard_update(&dashboard, &model); }
     gui_dashboard_input(&dashboard,GUI_INPUT_BACK,&model);
     gui_dashboard_render(&dashboard, &canvas, &model);
     if (save_frame(argv[1], "menu-main")) return 1;
@@ -103,9 +105,14 @@ int main(int argc, char **argv) {
     gui_dashboard_input(&dashboard,GUI_INPUT_BACK,&model); gui_dashboard_input(&dashboard,GUI_INPUT_BACK,&model);
     gui_menu_select(&dashboard.menu,9); gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
     gui_dashboard_render(&dashboard,&canvas,&model); if (save_frame(argv[1],"menu-parameters")) return 1;
-    gui_menu_select(&dashboard.menu,1); gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
+    gui_menu_select(&dashboard.menu,0); gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
+    gui_dashboard_render(&dashboard,&canvas,&model); if (save_frame(argv[1],"heater-tuning")) return 1;
+    gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
     model.rc_ui_active=model.rc_ui_ready=1;
-    gui_dashboard_render(&dashboard,&canvas,&model); if (save_frame(argv[1],"parameter-target")) return 1;
+    gui_dashboard_render(&dashboard,&canvas,&model); if (save_frame(argv[1],"heater-tuning-edit")) return 1;
+    gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
+    gui_dashboard_input(&dashboard,GUI_INPUT_CALIBRATION,&model);
+    gui_dashboard_render(&dashboard,&canvas,&model); if (save_frame(argv[1],"heater-limits")) return 1;
     model.rc_ui_active=model.rc_ui_ready=0;
     model.imu_cal_failed=1; model.attitude_valid=0;
     gui_dashboard_set_page(&dashboard,2); gui_dashboard_render(&dashboard,&canvas,&model);
