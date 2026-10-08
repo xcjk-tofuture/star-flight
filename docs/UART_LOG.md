@@ -65,6 +65,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\uart-monitor.ps1 -Port COM7
 - `SBUS`每5秒记录DMA块/字节、有效/错误帧、队列丢弃、frame-lost/failsafe、接收运行状态、原始链路、校准可用性、无效通道掩码及数据年龄。
   `raw=1 cal=0`表示已收到健康数据但范围未校准，不是接收机未连接；`invalid` bit0–7分别对应CH1–CH8。
   UART错误值为读取时HAL状态，不是累计错误次数；即使错误重启清零，`chunks/bytes/bad`仍帮助定位无数据或格式不符。
+- `SBUS_RX`记录累计PE/NE/FE/ORE/DMA错误、自动重启尝试/成功/失败与最后HAL状态；本项目0x4是FE，0x2是NE。
+  出错后任务恢复DMA，收到新鲜健康帧后才恢复连接，详见RC_LINK.md。
 - 每个资源初始化的开始、返回值和剩余堆；每个任务的句柄、优先级、配置栈大小。
 - 调度器启动情况、遥测周期、LOG 命令和缓存大小。
 - PC 任务运行约两秒和八秒后：传感器初始化标志、姿态有效标志、实际 ID、传感器数据、UART 发送统计、OLED/PC/Sensor 历史最小栈余量、堆余量及日志丢弃数。
