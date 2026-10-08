@@ -72,8 +72,8 @@ static void process_navigation(void) {
         else if (command == GUI_COMMAND_MAG_START) sensors_request_mag_calibration();
         else if (command == GUI_COMMAND_MAG_CANCEL) sensors_cancel_mag_calibration();
         else if (command == GUI_COMMAND_ACCEL_START) sensors_request_accel_calibration();
-        else if (command == GUI_COMMAND_ACCEL_CONFIRM) sensors_confirm_accel_face();
         else if (command == GUI_COMMAND_ACCEL_CANCEL) sensors_cancel_accel_calibration();
+        else if (command == GUI_COMMAND_REMOTE_CANCEL) sbus_cancel_calibration();
     }
 }
 static void read_model(void) {
@@ -110,6 +110,10 @@ static void read_model(void) {
     model.rc_connected = remote.Connect_State;
     model.rc_raw_connected = raw.Connect_State;
     model.remote_calibrating = sbus_calibration_active();
+    model.remote_saving=sbus_calibration_saving();
+    sbus_diagnostics_t rc_diag; sbus_diagnostics_read(&rc_diag);
+    model.rc_receiver_present=rc_diag.receiver_present; model.rc_parameters_valid=rc_diag.calibrated;
+    model.rc_invalid_ranges=rc_diag.invalid_ranges;
     model.imu_calibrating = sensor_imu_calibrating(); model.mag_calibrating = sensors_mag_calibration_active();
     model.imu_cal_failed=sensor_imu_calibration_failed();
     sensor_processing_stats_t processing;
@@ -120,8 +124,12 @@ static void read_model(void) {
     model.mag_calibration_step=mag_cal.step; model.mag_cal_samples=mag_cal.samples;
     model.mag_cal_rms_permille=mag_cal.rms_permille; model.mag_cal_coverage=mag_cal.coverage;
     model.mag_cal_reason=mag_cal.reason;
-    memcpy(model.mag_cal_rotation,mag_cal.rotation,sizeof(mag_cal.rotation));
-    model.mag_cal_axis=mag_cal.axis; model.mag_cal_hint=mag_cal.hint; model.mag_cal_quality_ready=mag_cal.quality_ready;
+    model.mag_cal_hint=mag_cal.hint; model.mag_cal_quality_ready=mag_cal.quality_ready;
+    model.mag_sphere_ready=mag_cal.sphere_ready; model.mag_sphere_fitted=mag_cal.sphere_fitted;
+    model.mag_cursor_valid=mag_cal.sphere_cursor_valid; model.mag_sphere_covered=mag_cal.sphere_covered;
+    model.mag_sphere_mask=mag_cal.sphere_mask;
+    memcpy(model.mag_sphere_cursor,mag_cal.sphere_cursor,sizeof(mag_cal.sphere_cursor));
+    memcpy(model.mag_sphere_goal,mag_cal.sphere_goal,sizeof(mag_cal.sphere_goal));
     sensor_accel_calibration_stats_t accel_cal;
     sensor_accel_calibration_stats_read(&accel_cal);
     model.accel_calibrating=accel_cal.active; model.accel_cal_faces=accel_cal.faces;

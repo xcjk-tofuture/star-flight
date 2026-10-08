@@ -39,7 +39,9 @@ static const char *status(const gui_model_t *m) {
     if (m->remote_calibrating) return "遥控校准";
     if (!m->imu_ok) return "惯导异常";
     if (!m->attitude_valid) return "数据过期";
-    if (!m->rc_connected) return "待遥控";
+    if (!m->rc_raw_connected) return m->rc_receiver_present ? "遥控失联":"待遥控";
+    if (!m->rc_parameters_valid) return "遥控待校";
+    if (!m->rc_connected) return "遥控未就绪";
     return m->state == 3 ? "紧急" : m->state == 2 ? "飞行" : m->state == 1 ? "解锁" : "锁定";
 }
 static void number(gui_canvas_t *c, int x, int y, float value, unsigned decimals,
@@ -57,9 +59,9 @@ static void header(gui_canvas_t *c, const char *title, const char *badge) {
     gui_line(c, 0, 14, GUI_WIDTH-1, 14);
 }
 static void footer(gui_canvas_t *c, const gui_dashboard_t *d) {
-    const char *hint = d->page == GUI_PAGE_REMOTE_CAL ? "2VIEW 2HOLD CAL 1HOLD BACK"
-                      : d->page == GUI_PAGE_ACCEL_CAL ? "1 VIEW 2 START HOLD1 BACK"
-                      : d->page == GUI_PAGE_MAG_CAL ? "2 VIEW HOLD1 CANCEL"
+    const char *hint = d->page == GUI_PAGE_REMOTE_CAL ? "2 VIEW 1HOLD SAVE 2HOLD CANCEL"
+                      : d->page == GUI_PAGE_ACCEL_CAL ? "1/2 VIEW HOLD2 CANCEL"
+                      : d->page == GUI_PAGE_MAG_CAL ? "2 FLIP HOLD2 CANCEL"
                       : d->page > GUI_PAGE_COUNT ? "1HOLD MENU 2HOLD CAL" : "1PAGE 2VIEW 1HOLD MENU";
     gui_text(c, 1, 58, hint, GUI_FONT_TINY);
     if (d->page <= GUI_PAGE_COUNT)
@@ -111,12 +113,24 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
         return GUI_COMMAND_NONE;
     }
     if (input == GUI_INPUT_CALIBRATION) {
+        if (m->mag_calibrating) {
+            if (m->mag_calibration_step>=2) { gui_dashboard_set_page(d,GUI_PAGE_MAG_CAL); return GUI_COMMAND_NONE; }
+            open_calibration(d,m); return GUI_COMMAND_MAG_CANCEL;
+        }
+        if (m->accel_calibrating) {
+            if (m->accel_cal_phase>=UAV_ACCEL_SAVE) { gui_dashboard_set_page(d,GUI_PAGE_ACCEL_CAL); return GUI_COMMAND_NONE; }
+            open_calibration(d,m); return GUI_COMMAND_ACCEL_CANCEL;
+        }
+        if (m->remote_calibrating) {
+            if (m->remote_saving) { gui_dashboard_set_page(d,GUI_PAGE_REMOTE_CAL); return GUI_COMMAND_NONE; }
+            open_calibration(d,m); return GUI_COMMAND_REMOTE_CANCEL;
+        }
         if (d->screen != GUI_SCREEN_CONFIRM && d->screen != GUI_SCREEN_MESSAGE) open_calibration(d, m);
         return GUI_COMMAND_NONE;
     }
     if (d->screen == GUI_SCREEN_MESSAGE) { open_calibration(d, m); return GUI_COMMAND_NONE; }
     if (input == GUI_INPUT_NEXT) {
-        if (d->screen == GUI_SCREEN_PAGE && d->page==GUI_PAGE_ACCEL_CAL) gui_dashboard_next_view(d);
+        if (d->screen == GUI_SCREEN_PAGE && (d->page==GUI_PAGE_ACCEL_CAL || d->page==GUI_PAGE_MAG_CAL)) gui_dashboard_next_view(d);
         else if (d->screen == GUI_SCREEN_PAGE) gui_dashboard_next_page(d);
         else if (d->screen == GUI_SCREEN_HELP) d->help_page ^= 1;
         else gui_menu_next(&d->menu);
@@ -124,8 +138,6 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
     }
     if (input != GUI_INPUT_ENTER) return GUI_COMMAND_NONE;
     if (d->screen == GUI_SCREEN_PAGE) {
-        if (d->page==GUI_PAGE_ACCEL_CAL && m->accel_calibrating && m->accel_cal_phase==UAV_ACCEL_PLACE)
-            return GUI_COMMAND_ACCEL_CONFIRM;
         gui_dashboard_next_view(d); return GUI_COMMAND_NONE;
     }
     if (d->screen == GUI_SCREEN_HELP) { open_root(d, 8); return GUI_COMMAND_NONE; }
@@ -281,7 +293,7 @@ static void sensors(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
 }
 static void remote(gui_canvas_t *c, const gui_model_t *m, unsigned view, int calibration) {
     unsigned first = view % 2 ? 4 : 0;
-    int raw_view = !calibration && view >= 2;
+    int raw_view = !calibration && (view >= 2 || !m->rc_parameters_valid);
     int connected = calibration || raw_view ? m->rc_raw_connected : m->rc_connected;
     if (calibration) {
         gui_text(c, 25, 16, "MIN", GUI_FONT_TINY);
@@ -305,6 +317,7 @@ static void remote(gui_canvas_t *c, const gui_model_t *m, unsigned view, int cal
             number(c, 99, y, m->remote_max[ch], 0, 0, connected, GUI_FONT_TINY);
         }
     }
+    if (!calibration && !m->rc_parameters_valid) gui_text(c,2,51,"RAW / CALIBRATION NEEDED",GUI_FONT_TINY);
 }
 static void flow(gui_canvas_t *c, const gui_dashboard_t *d, const gui_model_t *m) {
     if (!d->view) {
@@ -349,7 +362,9 @@ static void health(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
         health_row(c, 16, "IMU / MAG", m->imu_ok && m->mag_ok && !m->imu_cal_failed,
                    m->imu_cal_failed ? "CAL FAIL" : m->imu_ok ? m->fusion_mag_used ? "9AXIS OK" : "6AXIS" : "FAILED");
         health_row(c, 24, "BAROMETER", m->baro_ok, m->baro_ok ? "OK" : "FAILED");
-        health_row(c, 34, "RC / FLOW", m->rc_connected, m->rc_connected ? m->flow_valid ? "BOTH OK" : "NO FLOW" : "NO RC");
+        health_row(c, 34, "RC / FLOW", m->rc_raw_connected,
+                   !m->rc_raw_connected ? m->rc_receiver_present ? "FAILSAFE":"NO DATA"
+                   : !m->rc_parameters_valid ? "NEED CAL":m->flow_valid ? "BOTH OK":"NO FLOW");
         health_row(c, 44, "PARAM NVM", m->flash_ok, m->flash_ok ? "INTERNAL" : "FAILED");
     } else if (view == 1) {
         gui_text(c, 2, 16, "RTOS FREE / MIN B", GUI_FONT_TINY);
@@ -369,49 +384,62 @@ static void health(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
         gui_text(c, 76, 48, "PARTIAL TX", GUI_FONT_TINY);
     }
 }
+static void mag_sphere(gui_canvas_t *c, const gui_model_t *m, unsigned back) {
+    const int cx=25,cy=38,radius=17;
+    gui_circle(c,cx,cy,radius);
+    for (int latitude=-1;latitude<=1;latitude++) {
+        float z=latitude*.5f; int width=(int)(radius*sqrtf(1-z*z));
+        gui_dashed_line(c,cx-width,cy-(int)(radius*z),cx+width,cy-(int)(radius*z),3);
+    }
+    int last_x=cx,last_y=cy-radius;
+    for (unsigned i=1;i<=24;i++) {
+        float angle=i*(6.28318530718f/24);
+        int x=cx+(int)(radius*.55f*sinf(angle)),y=cy-(int)(radius*cosf(angle));
+        gui_line(c,last_x,last_y,x,y); last_x=x; last_y=y;
+    }
+    for (unsigned i=0;i<32;i++) {
+        float z=-.75f+.5f*(i/8),angle=-3.14159265359f+((i%8)+.5f)*(6.28318530718f/8);
+        float horizontal=sqrtf(1-z*z),x=horizontal*cosf(angle),depth=horizontal*sinf(angle);
+        if ((back ? -depth:depth)<0) continue;
+        int px=cx+(int)(radius*(back ? -x:x)),py=cy-(int)(radius*z);
+        if (m->mag_sphere_ready && (m->mag_sphere_mask & (1u<<i))) gui_box(c,px-1,py-1,3,3,1);
+        else gui_circle(c,px,py,1);
+    }
+    const float *goal=m->mag_sphere_goal;
+    if ((back ? -goal[1]:goal[1])>=0 && (m->now_ms/300)%2) {
+        int x=cx+(int)(radius*(back ? -goal[0]:goal[0])),y=cy-(int)(radius*goal[2]);
+        gui_circle(c,x,y,3); gui_line(c,x-3,y,x+3,y); gui_line(c,x,y-3,x,y+3);
+    }
+    if (m->mag_cursor_valid) {
+        const float *point=m->mag_sphere_cursor;
+        int x=cx+(int)(radius*(back ? -point[0]:point[0])),y=cy-(int)(radius*point[2]);
+        if ((back ? -point[1]:point[1])>=0) {
+            gui_color(c,0); gui_box(c,x-2,y-2,5,5,1); gui_color(c,1); gui_circle(c,x,y,2); gui_box(c,x,y,1,1,1);
+        } else gui_circle(c,x,y,2);
+    }
+    gui_text(c,3,16,back ? "BACK":"FRONT",GUI_FONT_TINY);
+}
 static void mag_cal(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
-    static const char *const prompts[] = {"绕三轴旋转", "正在校准", "正在保存", "校准完成", "校准失败"};
-    unsigned step = m->mag_calibration_step > 4 ? 4 : m->mag_calibration_step;
+    static const char *const prompts[]={"慢慢翻转","正在校准","正在保存","校准完成","校准失败"};
+    unsigned step=m->mag_calibration_step>4 ? 4:m->mag_calibration_step;
     const char *prompt=prompts[step];
     if (!step) {
-        static const char *const axes[]={"绕X轴慢转","绕Y轴慢转","绕Z轴慢转"};
-        int complete=m->mag_cal_rotation[0]>=100 && m->mag_cal_rotation[1]>=100 && m->mag_cal_rotation[2]>=100;
-        prompt=m->mag_cal_hint==1 ? "请转慢一点":m->mag_cal_hint==2 ? "请转动设备"
-              : complete ? "多换几个方向":axes[m->mag_cal_axis%3];
-        if (view && m->mag_cal_reason>=2 && m->mag_cal_reason<=6)
-            prompt=m->mag_cal_reason==6 || m->mag_cal_reason==4 ? "远离金属重试":"多换几个方向";
+        int goal_behind=(view ? -m->mag_sphere_goal[1]:m->mag_sphere_goal[1])<0;
+        prompt=m->mag_cal_hint==1 ? "请慢一点":!m->mag_sphere_ready ? "多换方向"
+               : goal_behind ? "补背面点":"补空白点";
+        if (m->mag_cal_reason==4 || m->mag_cal_reason==6) prompt="避开金属";
     }
-    gui_text(c, 3, 16, prompt, GUI_FONT_CN12);
-    if (!view) {
-        static const char *const axes[]={"X","Y","Z"};
-        for (unsigned i=0;i<3;i++) {
-            int x=3+(int)i*42;
-            gui_text(c,x,31,axes[i],GUI_FONT_TINY);
-            number(c,x+8,31,m->mag_cal_rotation[i],0,0,1,GUI_FONT_TINY);
-            gui_text(c,x+23,31,"%",GUI_FONT_TINY);
-            gui_bar(c,x,40,36,4,m->mag_cal_rotation[i],0,100);
-        }
-        gui_text(c,3,48,"N",GUI_FONT_TINY);
-        number(c,11,48,m->mag_cal_samples,0,0,1,GUI_FONT_TINY);
-        gui_text(c,39,48,"RMS%",GUI_FONT_TINY);
-        number(c,61,48,m->mag_cal_rms_permille*.1f,1,0,m->mag_cal_quality_ready,GUI_FONT_TINY);
-        gui_text(c,94,48,"2 DETAIL",GUI_FONT_TINY);
-        return;
-    }
-    gui_text(c,3,31,"N",GUI_FONT_TINY);
-    number(c,11,31,m->mag_cal_samples,0,0,1,GUI_FONT_TINY);
-    gui_text(c,42,31,"RMS%",GUI_FONT_TINY);
-    number(c,64,31,m->mag_cal_rms_permille*.1f,1,0,m->mag_cal_quality_ready,GUI_FONT_TINY);
-    unsigned octants=0;
-    for (unsigned i=0;i<8;i++) {
-        int covered=m->mag_cal_quality_ready && !!(m->mag_cal_coverage & (1u<<i)); octants+=(unsigned)covered;
-        gui_box(c,96+(int)(i%4)*7,31+(int)(i/4)*8,6,6,covered);
-    }
-    gui_text(c,3,42,"OCT",GUI_FONT_TINY);
-    number(c,21,42,octants,0,0,m->mag_cal_quality_ready,GUI_FONT_TINY);
-    gui_text(c,29,42,"/8 ERR",GUI_FONT_TINY);
-    number(c,59,42,m->mag_cal_reason,0,0,1,GUI_FONT_TINY);
-    gui_bar(c,3,51,120,4,m->mag_cal_samples,0,200);
+    mag_sphere(c,m,view);
+    gui_text(c,53,16,prompt,GUI_FONT_CN12);
+    gui_text(c,53,29,m->mag_sphere_fitted ? "FIT":"PREVIEW",GUI_FONT_TINY);
+    number(c,87,29,m->mag_sphere_covered,0,0,m->mag_sphere_ready,GUI_FONT_TINY);
+    gui_text(c,99,29,"/32",GUI_FONT_TINY);
+    gui_text(c,53,38,"N",GUI_FONT_TINY);
+    number(c,61,38,m->mag_cal_samples,0,0,1,GUI_FONT_TINY);
+    gui_text(c,87,38,"ERR",GUI_FONT_TINY);
+    number(c,104,38,m->mag_cal_reason,0,0,1,GUI_FONT_TINY);
+    gui_text(c,53,48,"RMS%",GUI_FONT_TINY);
+    number(c,76,48,m->mag_cal_rms_permille*.1f,1,0,m->mag_cal_quality_ready,GUI_FONT_TINY);
 }
 static void accel_cal(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
     static const char *const faces[]={"Z轴朝上","Z轴朝下","X轴朝上","X轴朝下","Y轴朝上","Y轴朝下"};
@@ -431,7 +459,8 @@ static void accel_cal(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
         gui_circle(c,108+x,44-y,2);
         return;
     }
-    const char *prompt=faces[target],*detail="摆好按确认";
+    const char *prompt=faces[target],*detail="任意面静置";
+    if (m->accel_cal_detected<6 && (m->accel_cal_faces & (1u<<m->accel_cal_detected))) detail="此面已完成";
     if (m->accel_cal_phase==UAV_ACCEL_SETTLE)
         detail=m->accel_cal_reason==UAV_ACCEL_REASON_ORIENTATION ? "方向需调整"
                : m->accel_cal_reason==UAV_ACCEL_REASON_NOISE ? "振动请重采":"请保持静止";
@@ -440,7 +469,7 @@ static void accel_cal(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
     else if (m->accel_cal_phase==UAV_ACCEL_SAVE) detail="正在保存";
     else if (m->accel_cal_phase==UAV_ACCEL_DONE) { prompt="六面已完成"; detail="校准完成"; }
     else if (m->accel_cal_phase==UAV_ACCEL_FAILED) { prompt="校准失败"; detail="返回后重试"; }
-    else if (m->accel_cal_reason==UAV_ACCEL_REASON_FIT) detail="摆正后重采";
+    else if (m->accel_cal_reason==UAV_ACCEL_REASON_FIT) detail="静置后重采";
     gui_text(c,3,16,prompt,GUI_FONT_CN12);
     gui_text(c,3,29,detail,GUI_FONT_CN12);
     gui_text(c,98,18,"ERR",GUI_FONT_TINY);
@@ -490,7 +519,11 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
             {"1短按：下一项", "2短按：确认", "1长按：返回"},
             {"页面1：翻页", "页面2：切视图", "2长按：校准菜单"}
         };
-        for (unsigned i = 0; i < 3; i++) gui_text(c, 4, 16+(int)i*13, help[d->help_page][i], GUI_FONT_CN12);
+        for (unsigned i = 0; i < 3; i++) {
+            const char *hint=d->help_page==1 && i==2 && (m->mag_calibrating || m->accel_calibrating || m->remote_calibrating)
+                             ? "2长按：取消校准":help[d->help_page][i];
+            gui_text(c,4,16+(int)i*13,hint,GUI_FONT_CN12);
+        }
         gui_text(c, 1, 58, "1 NEXT 2 BACK HOLD=600ms", GUI_FONT_TINY);
         return;
     }

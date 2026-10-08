@@ -119,7 +119,6 @@ void Cold_Start_ARHS(_imuData_all imu, _ahrs_data *attitude);
 void sensors_request_mag_calibration(void);
 void sensors_cancel_mag_calibration(void);
 void sensors_request_accel_calibration(void);
-void sensors_confirm_accel_face(void);
 void sensors_cancel_accel_calibration(void);
 uint8_t sensors_accel_calibration_active(void);
 typedef struct {
@@ -133,7 +132,9 @@ enum { SENSOR_MAG_COLLECT=0, SENSOR_MAG_FIT=1, SENSOR_MAG_SAVE=2,
 typedef struct {
     uint16_t samples, rms_permille;
     uint8_t coverage, reason, step;
-    uint8_t rotation[3], axis, hint, quality_ready;
+    uint8_t hint, quality_ready, sphere_ready, sphere_fitted, sphere_cursor_valid, sphere_covered;
+    uint32_t sphere_mask;
+    float sphere_cursor[3], sphere_goal[3];
 } sensor_mag_calibration_stats_t;
 void sensor_mag_calibration_stats_read(sensor_mag_calibration_stats_t *out);
 uint8_t sensors_mag_calibration_active(void);

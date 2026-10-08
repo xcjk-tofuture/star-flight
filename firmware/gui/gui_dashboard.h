@@ -14,7 +14,7 @@ typedef enum { GUI_INPUT_NEXT = 1, GUI_INPUT_ENTER, GUI_INPUT_BACK, GUI_INPUT_CA
                GUI_INPUT_NEXT_PAGE, GUI_INPUT_NEXT_VIEW } gui_input_t;
 typedef enum { GUI_COMMAND_NONE, GUI_COMMAND_REMOTE_START, GUI_COMMAND_REMOTE_SAVE,
                GUI_COMMAND_MAG_START, GUI_COMMAND_MAG_CANCEL, GUI_COMMAND_ACCEL_START,
-               GUI_COMMAND_ACCEL_CONFIRM, GUI_COMMAND_ACCEL_CANCEL } gui_command_t;
+               GUI_COMMAND_ACCEL_CANCEL, GUI_COMMAND_REMOTE_CANCEL } gui_command_t;
 typedef enum { GUI_SCREEN_ROOT, GUI_SCREEN_PAGE, GUI_SCREEN_CALIBRATION,
                GUI_SCREEN_HELP, GUI_SCREEN_CONFIRM, GUI_SCREEN_MESSAGE } gui_screen_t;
 /* Presentation-only snapshot. Units: rad, rad/s, m/s2, uT, C, Pa, flow mm/s/mm.
@@ -27,11 +27,14 @@ typedef struct {
     int16_t flow_height_mm;
     uint16_t remote_raw[8], remote_pwm[8], remote_min[8], remote_max[8];
     uint8_t attitude_valid, state, rc_connected, rc_raw_connected, remote_calibrating;
+    uint8_t rc_receiver_present, rc_parameters_valid, remote_saving, rc_invalid_ranges;
     uint8_t imu_calibrating, imu_cal_failed, fusion_mag_used, mag_calibrating, mag_calibration_step;
     uint8_t imu_ok, mag_ok, baro_ok, flash_ok, flow_valid, flow_quality;
     uint16_t mag_cal_samples, mag_cal_rms_permille;
     uint8_t mag_cal_coverage, mag_cal_reason;
-    uint8_t mag_cal_rotation[3], mag_cal_axis, mag_cal_hint, mag_cal_quality_ready;
+    uint8_t mag_cal_hint, mag_cal_quality_ready, mag_sphere_ready, mag_sphere_fitted, mag_cursor_valid, mag_sphere_covered;
+    uint32_t mag_sphere_mask;
+    float mag_sphere_cursor[3], mag_sphere_goal[3];
     uint8_t accel_calibrating, accel_cal_faces, accel_cal_target, accel_cal_detected, accel_cal_phase, accel_cal_reason;
     uint16_t accel_cal_samples, accel_cal_rms_permille;
     float accel_cal_raw[3];

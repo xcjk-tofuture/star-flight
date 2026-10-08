@@ -6,7 +6,10 @@ static gui_dashboard_t dashboard;
 static gui_model_t model;
 static void open_calibration(void) {
     gui_dashboard_init(&dashboard);
-    assert(gui_dashboard_input(&dashboard, GUI_INPUT_CALIBRATION, &model) == GUI_COMMAND_NONE);
+    if (model.remote_calibrating) {
+        gui_dashboard_set_page(&dashboard,GUI_PAGE_REMOTE_CAL);
+        assert(gui_dashboard_input(&dashboard,GUI_INPUT_BACK,&model)==GUI_COMMAND_NONE);
+    } else assert(gui_dashboard_input(&dashboard, GUI_INPUT_CALIBRATION, &model) == GUI_COMMAND_NONE);
 }
 static gui_command_t confirm_selection(void) {
     assert(dashboard.screen == GUI_SCREEN_CONFIRM);

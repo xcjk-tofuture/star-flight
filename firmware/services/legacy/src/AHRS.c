@@ -16,7 +16,6 @@
 
 #define RAD_PER_DEG 0.017453293f
 #define DEG_PER_RAD 57.29577951f
-#define MAG_ROTATION_TARGET_RAD 6.28318530718f
 
 #define EXTERN_IMU 0
 
@@ -62,8 +61,7 @@ static uav_mag_calibrator_t mag_calibrator;
 static uav_mag_calibration_t mag_candidate;
 static uint8_t magCalistep, mag_fit_reason;
 static uint32_t mag_started_ms, mag_fit_ms, mag_save_ticket, mag_finished_ms, mag_progress_ms;
-static float mag_rotation[3], mag_turn_rate;
-static uint32_t mag_turn_us;
+static float mag_turn_rate;
 static uint8_t mag_turn_seen;
 static uint8_t mag_fit_attempted;
 static uav_accel_calibrator_t accel_calibrator;
@@ -103,25 +101,21 @@ void sensors_cancel_mag_calibration(void) {
 }
 void sensor_mag_calibration_stats_read(sensor_mag_calibration_stats_t *out) {
     taskENTER_CRITICAL();
-    *out=(sensor_mag_calibration_stats_t){mag_calibrator.count,
-        (uint16_t)(isfinite(mag_candidate.rms_fraction) && mag_candidate.rms_fraction<65 ? mag_candidate.rms_fraction*1000:65535), (uint8_t)mag_candidate.coverage,
-        mag_fit_reason, magCalistep, {0}, 0, 0, (uint8_t)(mag_fit_attempted && mag_candidate.samples>0)};
+    *out=(sensor_mag_calibration_stats_t){.samples=mag_calibrator.count,
+        .rms_permille=(uint16_t)(isfinite(mag_candidate.rms_fraction) && mag_candidate.rms_fraction<65 ? mag_candidate.rms_fraction*1000:65535),
+        .coverage=(uint8_t)mag_candidate.coverage,.reason=mag_fit_reason,.step=magCalistep,
+        .quality_ready=(uint8_t)(mag_fit_attempted && mag_candidate.samples>0),
+        .sphere_ready=mag_calibrator.sphere.ready,.sphere_fitted=mag_calibrator.sphere.fitted,
+        .sphere_cursor_valid=mag_calibrator.sphere.cursor_valid,.sphere_covered=mag_calibrator.sphere.covered,
+        .sphere_mask=mag_calibrator.sphere.mask};
+    memcpy(out->sphere_cursor,mag_calibrator.sphere.cursor,sizeof(out->sphere_cursor));
+    memcpy(out->sphere_goal,mag_calibrator.sphere.goal,sizeof(out->sphere_goal));
     if (!out->quality_ready) out->coverage=0;
-    unsigned axis=0;
-    for (unsigned i=0;i<3;i++) {
-        out->rotation[i]=mag_rotation[i]>=MAG_ROTATION_TARGET_RAD ? 100:
-            (uint8_t)(mag_rotation[i]*100/MAG_ROTATION_TARGET_RAD);
-        if (mag_rotation[i]<mag_rotation[axis]) axis=i;
-    }
-    out->axis=(uint8_t)axis;
     out->hint=mag_turn_rate>1.5f ? 1:mag_turn_rate<.1f ? 2:0;
     taskEXIT_CRITICAL();
 }
 void sensors_request_accel_calibration(void) {
     taskENTER_CRITICAL(); accel_requests|=1u; taskEXIT_CRITICAL();
-}
-void sensors_confirm_accel_face(void) {
-    taskENTER_CRITICAL(); accel_requests|=2u; taskEXIT_CRITICAL();
 }
 void sensors_cancel_accel_calibration(void) {
     taskENTER_CRITICAL(); accel_requests|=4u; taskEXIT_CRITICAL();
@@ -135,18 +129,10 @@ void sensor_accel_calibration_stats_read(sensor_accel_calibration_stats_t *out) 
         {imu_pipeline.sample.acc_uncalibrated[0],imu_pipeline.sample.acc_uncalibrated[1],imu_pipeline.sample.acc_uncalibrated[2]}};
     taskEXIT_CRITICAL();
 }
-static int mag_rotations_complete(void) {
-    return mag_rotation[0]>=MAG_ROTATION_TARGET_RAD && mag_rotation[1]>=MAG_ROTATION_TARGET_RAD &&
-           mag_rotation[2]>=MAG_ROTATION_TARGET_RAD;
-}
-static void mag_rotation_update(uint32_t us) {
+static void mag_motion_update(void) {
     const float *g=imu_pipeline.sample.gyro_control;
     mag_turn_rate=sqrtf(g[0]*g[0]+g[1]*g[1]+g[2]*g[2]);
-    uint32_t dt=(uint32_t)(us-mag_turn_us); mag_turn_us=us;
-    if (!mag_turn_seen) { mag_turn_seen=1; return; }
-    if (!dt || dt>10000 || mag_turn_rate>1.5f || mag_turn_rate<.1f) return;
-    for (unsigned i=0;i<3;i++) if (fabsf(g[i])>=.1f)
-        mag_rotation[i]=fminf(MAG_ROTATION_TARGET_RAD,mag_rotation[i]+fabsf(g[i])*dt*1e-6f);
+    mag_turn_seen=1;
 }
 uint8_t sensors_mag_calibration_active(void) { return MagCalFlag; } // 传感器校准标准位
 u8 Bmi088Init_Flag = 1;
@@ -259,7 +245,7 @@ void Sensor_Data_Task_Proc(void const *argument) {
             test_acc=(acc_raw_data_t){acc[0],acc[1],acc[2]};
             test_gyro=(gyro_raw_data_t){gyro[0],gyro[1],gyro[2]};
             copy_imu_sample();
-            if (MagCalFlag) mag_rotation_update(sample_us);
+            if (MagCalFlag) mag_motion_update();
             if (AccelCalFlag && accel_calibrator.phase<=UAV_ACCEL_SAMPLE) {
                 uint8_t before=accel_calibrator.mask,face=accel_calibrator.target;
                 (void)uav_accel_calibrator_feed(&accel_calibrator,acc,imu_pipeline.sample.acc_uncalibrated,
@@ -280,6 +266,7 @@ void Sensor_Data_Task_Proc(void const *argument) {
             if (status==1) {
                 test_mag=(mag_raw_data_t){field[0],field[1],field[2]};
                 mag_sample_us=platform_micros(); mag_fresh_samples++;
+                if (MagCalFlag) uav_mag_calibrator_update_cursor(&mag_calibrator,field);
                 if (MagCalFlag && sample_good && magCalistep==SENSOR_MAG_COLLECT && mag_turn_seen &&
                     mag_turn_rate>=.1f && mag_turn_rate<=1.5f)
                     (void)uav_mag_calibrator_feed(&mag_calibrator,field,now);
@@ -323,7 +310,9 @@ void Sensor_Data_Task_Proc(void const *argument) {
                 mag_started_ms=mag_fit_ms=mag_progress_ms=now; mag_save_ticket=0;
                 magCalistep=SENSOR_MAG_COLLECT; mag_fit_reason=UAV_MAG_CAL_SAMPLES;
                 MagCalFlag=1; flight_attitude_invalidate();
-                memset(mag_rotation,0,sizeof(mag_rotation)); mag_turn_seen=0; mag_turn_rate=0;
+                mag_turn_seen=0; mag_turn_rate=0;
+                float current[3]={test_mag.x,test_mag.y,test_mag.z};
+                uav_mag_calibrator_refresh_sphere(&mag_calibrator,NULL,current,now);
                 mag_fit_attempted=0;
                 uav_logf("INFO","MAG_CAL","ellipsoid start min_samples=200 capacity=512 timeout=180s rotate=ALL_AXES raw_fresh_only=1");
             } else uav_logf("WARN","SENSOR","magnetic calibration rejected: state=%u gyro_cal=%u failed=%u mag_rc=%u",
@@ -344,11 +333,10 @@ void Sensor_Data_Task_Proc(void const *argument) {
                 uav_accel_calibrator_init(&accel_calibrator); memset(&accel_candidate,0,sizeof(accel_candidate));
                 accel_started_ms=accel_progress_ms=now; accel_save_ticket=0; AccelCalFlag=1;
                 flight_attitude_invalidate();
-                uav_logf("INFO","ACC_CAL","start faces=Z+,Z-,X+,X-,Y+,Y- LPF=5Hz hold_ms=800 samples_per_face=200 sample_Hz=100 timeout_s=300 confirm_each_face=1");
+                uav_logf("INFO","ACC_CAL","start faces=ANY_ORDER LPF=5Hz hold_ms=800 samples_per_face=200 sample_Hz=100 timeout_s=300 auto_detect=1");
             } else uav_logf("WARN","ACC_CAL","start rejected state=%u gyro=%u mag_cal=%u bmi=%u",
                            flight.state,GyroCalFlag,MagCalFlag,Bmi088Init_Flag);
         }
-        if ((accel_request&2u) && AccelCalFlag) uav_accel_calibrator_confirm(&accel_calibrator);
         if (AccelCalFlag) accel_calibration_update(now);
         if (MagCalFlag) Mag_Zero_Offset_Calibration(&imudata_all);
         if (sample_good && (int32_t)(sample_us-next_fusion)>=0) {
@@ -511,12 +499,18 @@ void Mag_Zero_Offset_Calibration(_imuData_all *imu) {
         if ((uint32_t)(now-mag_started_ms)>=UAV_MAG_CAL_TIMEOUT_MS) {
             mag_calibration_fail(UAV_MAG_CAL_TIMEOUT); return;
         }
-        if (mag_calibrator.count>=UAV_MAG_CAL_MIN_SAMPLES && mag_rotations_complete() &&
+        if ((uint32_t)(now-mag_calibrator.sphere_ms)>=500u) {
+            float current[3]={test_mag.x,test_mag.y,test_mag.z};
+            uav_mag_calibrator_refresh_sphere(&mag_calibrator,&mag_candidate,current,now);
+        }
+        if (mag_calibrator.count>=UAV_MAG_CAL_MIN_SAMPLES &&
             (uint32_t)(now-mag_fit_ms)>=5000u) {
             mag_fit_ms=now; magCalistep=SENSOR_MAG_FIT;
             mag_fit_attempted=1;
             mag_candidate.samples=0;
             mag_fit_reason=(uint8_t)uav_mag_calibrator_fit(&mag_calibrator,&mag_candidate);
+            float current[3]={test_mag.x,test_mag.y,test_mag.z};
+            uav_mag_calibrator_refresh_sphere(&mag_calibrator,&mag_candidate,current,now);
             if (mag_fit_reason==UAV_MAG_CAL_OK) {
                 if (UAV_Write_Param_Mag(&mag_candidate,&mag_save_ticket)!=0) {
                     mag_calibration_fail(UAV_MAG_CAL_STORAGE); return;
@@ -563,7 +557,7 @@ static void accel_calibration_update(uint32_t now) {
         int reason=uav_accel_calibrator_fit(&accel_calibrator,&accel_candidate);
         if (reason) {
             if (accel_calibrator.phase==UAV_ACCEL_PLACE)
-                uav_logf("WARN","ACC_CAL","recapture face=%u mask=0x%02x reason=tilted keep_level=1",
+                uav_logf("WARN","ACC_CAL","recapture face=%u mask=0x%02x reason=unstable hold_still=1",
                          accel_calibrator.target,accel_calibrator.mask);
             else accel_calibration_fail((uint8_t)reason);
             return;

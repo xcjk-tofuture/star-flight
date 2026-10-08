@@ -11,6 +11,7 @@ osThreadId KeyTaskHandle;
 void Key_Task_Proc(void const *argument) {
     (void)argument;
     uint8_t candidate = 0, stable = 0, samples = 0;
+    uint8_t key2_long_emitted=0;
     uint32_t pressed_ms = 0;
     for (;;) {
         keyDown = keyUp = 0;
@@ -25,12 +26,16 @@ void Key_Task_Proc(void const *argument) {
             keyDown = stable & (previous ^ stable);
             keyUp = (uint8_t)(~stable) & (previous ^ stable);
             keyOld = stable;
-            if (previous) {
+            if (previous && !(previous==2 && key2_long_emitted)) {
                 int long_press = (uint32_t)(now-pressed_ms) >= 600u;
                 uav_display_input(previous == 1 ? (long_press ? UAV_DISPLAY_BACK : UAV_DISPLAY_NEXT)
                                    : (long_press ? UAV_DISPLAY_CAL_MENU : UAV_DISPLAY_CONFIRM));
             }
             if (stable) pressed_ms = now;
+            if (stable==2) key2_long_emitted=0;
+        }
+        if (stable==2 && !key2_long_emitted && (uint32_t)(platform_millis()-pressed_ms)>=600u) {
+            uav_display_input(UAV_DISPLAY_CAL_MENU); key2_long_emitted=1;
         }
         osDelay(5);
     }
