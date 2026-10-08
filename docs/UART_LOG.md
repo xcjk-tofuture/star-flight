@@ -60,6 +60,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\uart-monitor.ps1 -Port COM7
 - `EXT_FLASH`为可选W25诊断；`STORAGE backend=INTERNAL ready=1`表示片内参数后端已初始化，启动不擦除。
 - 已保存磁椭球参数会打印`MAG_CAL loaded full_matrix=1`、各行矩阵（×1000）、偏置、场强和RMS。
   手动校准只有`COMPLETE saved=1 readback=1`才表示已保存并用于融合；等待写入时不提前报成功。
+- 六面加速度系数启动打印`ACC_CAL loaded faces=6`及零偏/比例；采集中记录每面完成、方向/静置/噪声原因及偏斜重采。
+  保存成功为`ACC_CAL COMPLETE saved=1 readback=1 applied_before_LPF=1`；诊断首个sequence涵盖三类IMU校准记录。
 - 每个资源初始化的开始、返回值和剩余堆；每个任务的句柄、优先级、配置栈大小。
 - 调度器启动情况、遥测周期、LOG 命令和缓存大小。
 - PC 任务运行约两秒和八秒后：传感器初始化标志、姿态有效标志、实际 ID、传感器数据、UART 发送统计、OLED/PC/Sensor 历史最小栈余量、堆余量及日志丢弃数。
