@@ -11,6 +11,7 @@
 #include "platform_time.h"
 #include "flight_machine.h"
 #include "flash_proc.h"
+#include "beeper.h"
 #include <string.h>
 
 static _sbus_ch_cal_struct control_channels;
@@ -21,7 +22,7 @@ static _uav_control_data uav_control_data;
 osThreadId MotorTaskHandle;
 
 // 传感器校准标准位
-// CH5 低档用于锁定手势；高档仅选择自稳。CH8 高档立即急停。
+// CH5 low=ground/UI, mid=preparation, high=stabilize; CH6 low=safety/kill.
 
 static u8 uavSafeFlag = LOCKED;
 static flight_machine_t machine;
@@ -67,7 +68,13 @@ void Motor_Task_Proc(void const *argument) {
         inputs.channels[5] = control_channels.CAL_CH6;
         inputs.channels[6] = control_channels.CAL_CH7;
         inputs.channels[7] = control_channels.CAL_CH8;
+        uint8_t before=machine.state;
         flight_machine_step(&machine, &inputs);
+        uav_beeper_alarm(machine.state==FM_EMERGENCY);
+        if (before!=machine.state && machine.state!=FM_EMERGENCY) {
+            uav_beeper_request(machine.state==FM_LOCKED ? UAV_BEEP_LOCK
+                : machine.state==FM_ARMED && before==FM_LOCKED ? UAV_BEEP_ARM:UAV_BEEP_ACCEPT);
+        }
         uavSafeFlag = machine.state;
         if (uavSafeFlag != FLYING) {
             memset(&uav_control_data.rollPid, 0, sizeof(PID));
@@ -141,9 +148,6 @@ void Motor_Task_Proc(void const *argument) {
                 break;
             }
 
-            if (uavSafeFlag == LOCKED && !inputs.calibrating && !inputs.storage_busy &&
-                inputs.connected && inputs.attitude_valid)
-                mag_cail_proc();
         }
         flight_fault_publish(machine.reason, machine.transitions);
         flight_state_publish(uavSafeFlag);
@@ -186,27 +190,4 @@ void UAV_Control_Init(_uav_control_data *uav_data) {
     uav_data->pitchSpeedData.ErrorMax = 100;
     uav_data->pitchSpeedData.DifferentialMax = 200;
     uav_data->pitchSpeedData.IntegrateMax = 1000;
-}
-
-void mag_cail_proc() // 上锁解锁处理
-{
-
-    static u32 magCount;
-    if (!sensors_mag_calibration_active()) {
-        if (control_channels.CAL_CH1 < 2050 && control_channels.CAL_CH1 > 1950 &&
-            control_channels.CAL_CH2 < 2050 && control_channels.CAL_CH2 > 1950 &&
-            control_channels.CAL_CH3 < 2050 && control_channels.CAL_CH3 > 1950 &&
-            control_channels.CAL_CH4 < 1050 && control_channels.CAL_CH4 > 950) {
-
-            magCount++;
-            if (magCount > 200) {
-
-                uav_display_request_page(20);
-                magCount = 0;
-                sensors_request_mag_calibration();
-            }
-        } else {
-            magCount = 0;
-        }
-    }
 }

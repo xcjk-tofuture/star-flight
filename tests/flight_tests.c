@@ -8,7 +8,8 @@ static flight_inputs_t input(void) {
     flight_inputs_t i = {.connected = 1, .attitude_valid = 1};
     for (unsigned c = 0; c < 8; c++)
         i.channels[c] = 1000;
-    i.channels[3] = 2000;
+    i.channels[0]=i.channels[1]=i.channels[3]=1500;
+    i.channels[4]=1500; i.channels[5]=2000;
     return i;
 }
 static void tick(flight_machine_t *m, flight_inputs_t *i, uint32_t t) {
@@ -17,10 +18,11 @@ static void tick(flight_machine_t *m, flight_inputs_t *i, uint32_t t) {
     flight_machine_step(m, i);
 }
 static void arm(flight_machine_t *m, flight_inputs_t *i) {
-    tick(m, i, 0);
-    tick(m, i, 999);
-    assert(m->state == FM_LOCKED);
-    tick(m, i, 1000);
+    tick(m,i,0); tick(m,i,500);
+    i->channels[3]=2000; tick(m,i,505);
+    tick(m,i,1504);
+    assert(m->state==FM_LOCKED);
+    tick(m,i,1505);
     assert(m->state == FM_ARMED);
 }
 int main(void) {
@@ -30,7 +32,7 @@ int main(void) {
     arm(&m, &i);
     tick(&m, &i, 3000);
     assert(m.state == FM_ARMED); /* held gesture cannot toggle repeatedly */
-    i.channels[4] = 1500;
+    i.channels[4] = 2000;
     i.channels[2] = 1500;
     tick(&m, &i, 3005);
     assert(m.state == FM_ARMED);
@@ -42,7 +44,7 @@ int main(void) {
     assert(m.state == FM_EMERGENCY && (m.reason & FM_FAULT_REMOTE));
     i.connected = 1;
     i.channels[2] = 1600;
-    i.channels[4] = 1000;
+    i.channels[4] = 1000; i.channels[5]=1000;
     tick(&m, &i, 3020);
     assert(m.state == FM_EMERGENCY);
     i.channels[2] = 1000;
@@ -69,25 +71,27 @@ int main(void) {
     assert(m.state == FM_LOCKED);
     flight_machine_init(&m);
     i = input();
-    i.channels[7] = 1500;
-    tick(&m, &i, 0);
+    arm(&m,&i);
+    i.channels[5]=1000;
+    tick(&m,&i,1600);
     assert(m.state == FM_EMERGENCY);
     flight_machine_init(&m);
     i = input();
-    tick(&m, &i, UINT32_MAX - 500);
-    tick(&m, &i, 499);
+    tick(&m,&i,UINT32_MAX-1000);
+    tick(&m,&i,UINT32_MAX-500);
+    i.channels[3]=2000; tick(&m,&i,UINT32_MAX-499);
+    tick(&m,&i,500);
     assert(m.state == FM_ARMED);
     /* Broken one-second gesture must restart the timer. */
     flight_machine_init(&m);
     i = input();
-    tick(&m, &i, 0);
-    i.channels[0] = 1500;
-    tick(&m, &i, 900);
-    i.channels[0] = 1000;
-    tick(&m, &i, 1000);
-    tick(&m, &i, 1900);
-    assert(m.state == FM_LOCKED);
-    tick(&m, &i, 2000);
+    tick(&m,&i,0); tick(&m,&i,500);
+    i.channels[3]=2000; tick(&m,&i,505);
+    i.channels[3]=1500; tick(&m,&i,1000);
+    i.channels[3]=2000; tick(&m,&i,1200);
+    tick(&m,&i,2199);
+    assert(m.state==FM_LOCKED);
+    tick(&m,&i,2200);
     assert(m.state == FM_ARMED);
     uint8_t b[72] = {0};
     flight_machine_init(&m);
