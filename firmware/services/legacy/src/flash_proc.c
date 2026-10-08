@@ -21,6 +21,8 @@ typedef struct { uint32_t ticket; int status; } storage_completion_t;
 static storage_completion_t completed[8];
 static unsigned completion_index;
 static void update_sequence(unsigned kind, uint32_t seq) {
+    if (kind!=UAV_PARAM_IMU_LEGACY && kind!=UAV_PARAM_MAG && kind!=UAV_PARAM_ACCEL &&
+        kind!=UAV_PARAM_REMOTE && kind!=UAV_PARAM_PID) return;
     unsigned index=kind==UAV_PARAM_REMOTE ? 1u:kind==UAV_PARAM_PID ? 2u:0u;
     if (!storage_sequence[index] || (int32_t)(seq-storage_sequence[index])>0) storage_sequence[index]=seq;
 }
@@ -121,6 +123,11 @@ void UAV_Read_Param_Motor(_uav_control_data *d) {
         p[i]->Kp=star_read_f32(b+i*12); p[i]->Ki=star_read_f32(b+i*12+4); p[i]->Kd=star_read_f32(b+i*12+8);
     }
 }
+int UAV_Read_Param_Settings(uint8_t bytes[UAV_SETTINGS_BYTES]) {
+    memset(bytes,0,UAV_SETTINGS_BYTES);
+    if (load(UAV_PARAM_SETTINGS,bytes,UAV_SETTINGS_BYTES)) return 1;
+    memset(bytes,0,UAV_SETTINGS_BYTES); return 0;
+}
 static int enqueue(storage_request_t *r, uint32_t *ticket) {
     if (ticket) *ticket=0;
     if (!calibration_record_valid(r->kind,r->bytes,r->length)) {
@@ -144,6 +151,10 @@ int UAV_Write_Param_IMU(_imuData_all d) {
         d.magoffsetbias.x,d.magoffsetbias.y,d.magoffsetbias.z,d.magscalebias.x,d.magscalebias.y,d.magscalebias.z};
     for (unsigned i=0;i<18;i++) star_write_f32(r.bytes+4*i,v[i]);
     return enqueue(&r,NULL);
+}
+int UAV_Write_Param_Settings(const uint8_t bytes[UAV_SETTINGS_BYTES], uint32_t *ticket) {
+    storage_request_t r={.kind=UAV_PARAM_SETTINGS,.length=UAV_SETTINGS_BYTES};
+    memcpy(r.bytes,bytes,UAV_SETTINGS_BYTES); return enqueue(&r,ticket);
 }
 int UAV_Write_Param_Mag(const uav_mag_calibration_t *c, uint32_t *ticket) {
     storage_request_t r={.kind=UAV_PARAM_MAG,.length=UAV_PARAM_MAG_BYTES};

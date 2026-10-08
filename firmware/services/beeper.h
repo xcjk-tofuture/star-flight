@@ -4,6 +4,8 @@
 enum { UAV_BEEP_CLICK=0, UAV_BEEP_BACK, UAV_BEEP_ACCEPT, UAV_BEEP_START,
        UAV_BEEP_DONE, UAV_BEEP_LINK_OK, UAV_BEEP_ARM, UAV_BEEP_LOCK, UAV_BEEP_FAILURE };
 void uav_beeper_init(void);
+/* Normal: all tones; quiet: no navigation tones; muted: all tones off. */
+void uav_beeper_set_mode(uint8_t mode);
 void uav_beeper_request(unsigned event);
 void uav_beeper_alarm(uint8_t active);
 /* Nonblocking, called by Key task. No task/heap/timer allocation. */

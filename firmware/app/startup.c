@@ -10,6 +10,7 @@
 #include "flow_proc.h"
 #include "boot_log.h"
 #include "beeper.h"
+#include "app_settings.h"
 extern osThreadId RGBTaskHandle;
 extern void RGB_Task_Proc(void const *argument);
 extern osThreadId KeyTaskHandle;
@@ -35,6 +36,7 @@ void app_tasks_init(void) {
     app_boot_resource_init("FLOW_RX", flow_transport_init, "depth=4 frame=14B timeout=100ms");
     app_boot_resource_init("SPI1_MUTEX", uav_spi1_init, "recursive priority_inheritance=1");
     app_boot_resource_init("STORAGE", uav_storage_init, "write_depth=2");
+    uav_settings_init();
     uav_beeper_init();
     osThreadDef(RGB, RGB_Task_Proc, osPriorityIdle, 0, 128);
     RGBTaskHandle = osThreadCreate(osThread(RGB), NULL);

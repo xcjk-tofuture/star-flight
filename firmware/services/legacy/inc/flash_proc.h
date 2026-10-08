@@ -17,6 +17,7 @@
 #include "sbus_proc.h"
 #include "mag_calibration.h"
 #include "accel_calibration.h"
+#include "settings_record.h"
 
 int uav_storage_init(void);
 uint8_t uav_storage_busy(void);
@@ -37,6 +38,8 @@ int UAV_Write_Param_IMU(_imuData_all imu_data);
 int UAV_Write_Param_Mag(const uav_mag_calibration_t *calibration, uint32_t *ticket);
 int UAV_Write_Param_Accel(const uav_accel_calibration_t *calibration, uint32_t *ticket);
 int UAV_Write_Param_Remote_Ticket(_sbus_ch_struct data, uint32_t *ticket);
+int UAV_Read_Param_Settings(uint8_t bytes[UAV_SETTINGS_BYTES]);
+int UAV_Write_Param_Settings(const uint8_t bytes[UAV_SETTINGS_BYTES], uint32_t *ticket);
 
 #include "w25qxx_device.h"
 #endif

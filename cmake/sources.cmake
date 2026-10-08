@@ -8,6 +8,7 @@ set(FIRMWARE_SOURCES
   firmware/services/parameters/nv_store.c
   firmware/services/parameters/mag_record.c
   firmware/services/parameters/accel_record.c
+  firmware/services/parameters/settings_record.c
   firmware/platform/stm32/internal_flash_port.c
   firmware/platform/stm32/sensor_port.c
   firmware/drivers/storage/w25qxx.c
@@ -88,6 +89,7 @@ set(FIRMWARE_SOURCES
   firmware/algorithms/filter/biquad.c
   firmware/algorithms/attitude/fusion.c
   firmware/services/imu_pipeline.c
+  firmware/services/app_settings.c
   firmware/services/rc_ui.c
   firmware/services/beeper.c
   firmware/platform/stm32/beeper_port.c

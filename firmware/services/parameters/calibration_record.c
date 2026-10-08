@@ -2,10 +2,12 @@
 #include "star_protocol.h"
 #include "mag_record.h"
 #include "accel_record.h"
+#include "settings_record.h"
 #include <math.h>
 int calibration_record_valid(unsigned kind, const uint8_t *b, size_t n) {
     if (!b)
         return 0;
+    if (kind == UAV_PARAM_SETTINGS) return uav_settings_record_valid(b,n);
     if (kind == UAV_PARAM_ACCEL) {
         uav_accel_calibration_t c;
         return n == UAV_PARAM_ACCEL_BYTES && uav_accel_record_decode(b, &c);

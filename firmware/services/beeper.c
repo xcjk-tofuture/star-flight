@@ -3,6 +3,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "log_service.h"
+#include "settings_record.h"
 typedef struct { uint16_t hz, ms; } tone_t;
 static const tone_t click[]={{2200,25}},back[]={{1200,50}},accept[]={{2200,70}},
     start[]={{1800,70},{0,60},{1800,70}},
@@ -17,20 +18,35 @@ static const pattern_t patterns[]={{click,1},{back,1},{accept,1},{start,3},{done
     {link,3},{arm,3},{lock,3},{failure,5},{alarm,4}};
 static volatile uint32_t pending;
 static volatile uint8_t alarm_active;
+static volatile uint8_t sound_mode;
 static uint8_t enabled, playing, event, step;
 static uint32_t step_ms;
 void uav_beeper_init(void) {
     enabled=uav_beeper_port_init()==0;
-    uav_logf(enabled ? "INFO":"WARN","BEEPER","PB4 TIM3_CH1 passive ready=%u nonblocking=1",enabled);
+    uav_logf(enabled ? "INFO":"WARN","BEEPER","PB4 TIM3_CH1 passive ready=%u nonblocking=1 sound_mode=%u",enabled,sound_mode);
     if (enabled) uav_beeper_request(UAV_BEEP_START);
+}
+void uav_beeper_set_mode(uint8_t mode) {
+    if (mode>UAV_SOUND_MUTED) return;
+    taskENTER_CRITICAL();
+    sound_mode=mode;
+    if (mode==UAV_SOUND_MUTED) pending=0;
+    else if (mode==UAV_SOUND_QUIET) pending&=~7u;
+    taskEXIT_CRITICAL();
 }
 void uav_beeper_request(unsigned e) {
     if (e>UAV_BEEP_FAILURE) return;
-    taskENTER_CRITICAL(); pending|=1u<<e; taskEXIT_CRITICAL();
+    taskENTER_CRITICAL();
+    if (sound_mode!=UAV_SOUND_MUTED && (sound_mode!=UAV_SOUND_QUIET || e>UAV_BEEP_ACCEPT)) pending|=1u<<e;
+    taskEXIT_CRITICAL();
 }
 void uav_beeper_alarm(uint8_t active) { alarm_active=!!active; }
 void uav_beeper_tick(uint32_t now) {
     if (!enabled) return;
+    if (sound_mode==UAV_SOUND_MUTED || (sound_mode==UAV_SOUND_QUIET && playing && event<=UAV_BEEP_ACCEPT)) {
+        playing=0; uav_beeper_port_tone(0);
+        if (sound_mode==UAV_SOUND_MUTED) return;
+    }
     if (playing && event==9 && !alarm_active) { playing=0; uav_beeper_port_tone(0); }
     uint32_t requests;
     taskENTER_CRITICAL(); requests=pending; taskEXIT_CRITICAL();
