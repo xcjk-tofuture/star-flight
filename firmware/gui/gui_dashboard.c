@@ -1,23 +1,26 @@
 #include "gui_dashboard.h"
 #include "gui_scene.h"
+#include "accel_calibration.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #define DEG_PER_RAD 57.29577951f
 static const char *const titles[] = {"", "飞行总览", "三维姿态", "趋势曲线", "传感数据", "遥控通道", "光流测距", "系统诊断"};
 enum { MENU_CALIBRATION = 100, MENU_HELP, MENU_BACK, MENU_CONFIRM, MENU_CANCEL,
-       MENU_REMOTE_START, MENU_REMOTE_SAVE, MENU_MAG_START };
-enum { MESSAGE_NONE, MESSAGE_NO_RC, MESSAGE_FLASH, MESSAGE_MAG, MESSAGE_IMU, MESSAGE_STATE };
+       MENU_REMOTE_START, MENU_REMOTE_SAVE, MENU_MAG_START, MENU_ACCEL_START };
+enum { MESSAGE_NONE, MESSAGE_NO_RC, MESSAGE_FLASH, MESSAGE_MAG, MESSAGE_IMU, MESSAGE_STATE, MESSAGE_ACTIVE };
 static const gui_menu_item_t root_items[] = {
     {"飞行总览", 1}, {"三维姿态", 2}, {"趋势曲线", 3}, {"传感数据", 4},
     {"遥控通道", 5}, {"光流测距", 6}, {"系统诊断", 7},
     {"校准管理", MENU_CALIBRATION}, {"按键说明", MENU_HELP}
 };
 static const gui_menu_item_t calibration_start[] = {
-    {"遥控校准", MENU_REMOTE_START}, {"磁力校准", MENU_MAG_START}, {"返回菜单", MENU_BACK}
+    {"遥控校准", MENU_REMOTE_START}, {"磁力校准", MENU_MAG_START},
+    {"加速度校准", MENU_ACCEL_START}, {"返回菜单", MENU_BACK}
 };
 static const gui_menu_item_t calibration_save[] = {
-    {"保存退出", MENU_REMOTE_SAVE}, {"磁力校准", MENU_MAG_START}, {"返回菜单", MENU_BACK}
+    {"保存退出", MENU_REMOTE_SAVE}, {"磁力校准", MENU_MAG_START},
+    {"加速度校准", MENU_ACCEL_START}, {"返回菜单", MENU_BACK}
 };
 static const gui_menu_item_t confirmation[] = {{"确认", MENU_CONFIRM}, {"取消", MENU_CANCEL}};
 static void open_root(gui_dashboard_t *d, unsigned selection) {
@@ -26,9 +29,10 @@ static void open_root(gui_dashboard_t *d, unsigned selection) {
 }
 static void open_calibration(gui_dashboard_t *d, const gui_model_t *m) {
     d->screen = GUI_SCREEN_CALIBRATION;
-    gui_menu_open(&d->menu, m->remote_calibrating ? calibration_save : calibration_start, 3, 0);
+    gui_menu_open(&d->menu, m->remote_calibrating ? calibration_save : calibration_start, 4, 0);
 }
 static const char *status(const gui_model_t *m) {
+    if (m->accel_calibrating) return "六面校准";
     if (m->imu_cal_failed) return "校准失败";
     if (m->imu_calibrating) return "校准中";
     if (m->mag_calibrating) return "磁校中";
@@ -54,6 +58,8 @@ static void header(gui_canvas_t *c, const char *title, const char *badge) {
 }
 static void footer(gui_canvas_t *c, const gui_dashboard_t *d) {
     const char *hint = d->page == GUI_PAGE_REMOTE_CAL ? "2VIEW 2HOLD CAL 1HOLD BACK"
+                      : d->page == GUI_PAGE_ACCEL_CAL ? "1 VIEW 2 START HOLD1 BACK"
+                      : d->page == GUI_PAGE_MAG_CAL ? "2 VIEW HOLD1 CANCEL"
                       : d->page > GUI_PAGE_COUNT ? "1HOLD MENU 2HOLD CAL" : "1PAGE 2VIEW 1HOLD MENU";
     gui_text(c, 1, 58, hint, GUI_FONT_TINY);
     if (d->page <= GUI_PAGE_COUNT)
@@ -64,6 +70,7 @@ static unsigned view_count(uint8_t page) {
     if (page == GUI_PAGE_TRENDS) return GUI_CHART_COUNT;
     if (page == GUI_PAGE_SENSORS || page == GUI_PAGE_HEALTH) return 3;
     if (page == GUI_PAGE_REMOTE) return 4;
+    if (page == GUI_PAGE_MAG_CAL || page == GUI_PAGE_ACCEL_CAL) return 2;
     if (page == GUI_PAGE_ATTITUDE || page == GUI_PAGE_FLOW ||
         page == GUI_PAGE_REMOTE_CAL) return 2;
     return 1;
@@ -72,7 +79,7 @@ void gui_dashboard_init(gui_dashboard_t *d) {
     memset(d, 0, sizeof(*d)); d->page = GUI_PAGE_OVERVIEW; open_root(d, 0);
 }
 void gui_dashboard_set_page(gui_dashboard_t *d, uint8_t page) {
-    if ((page >= 1 && page <= GUI_PAGE_COUNT) || page == GUI_PAGE_REMOTE_CAL || page == GUI_PAGE_MAG_CAL) {
+    if ((page >= 1 && page <= GUI_PAGE_COUNT) || page == GUI_PAGE_REMOTE_CAL || page == GUI_PAGE_MAG_CAL || page == GUI_PAGE_ACCEL_CAL) {
         d->page = page; d->view = 0; d->screen = GUI_SCREEN_PAGE;
     }
 }
@@ -92,6 +99,10 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
             if (m->mag_calibration_step >= 2) return GUI_COMMAND_NONE;
             open_calibration(d, m); return GUI_COMMAND_MAG_CANCEL;
         }
+        if (d->screen == GUI_SCREEN_PAGE && d->page == GUI_PAGE_ACCEL_CAL && m->accel_calibrating) {
+            if (m->accel_cal_phase>=UAV_ACCEL_SAVE) return GUI_COMMAND_NONE;
+            open_calibration(d,m); return GUI_COMMAND_ACCEL_CANCEL;
+        }
         if (d->screen == GUI_SCREEN_ROOT) d->screen = GUI_SCREEN_PAGE;
         else if (d->screen == GUI_SCREEN_CONFIRM || d->screen == GUI_SCREEN_MESSAGE) open_calibration(d, m);
         else if (d->screen == GUI_SCREEN_PAGE && d->page > GUI_PAGE_COUNT) open_calibration(d, m);
@@ -104,13 +115,18 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
     }
     if (d->screen == GUI_SCREEN_MESSAGE) { open_calibration(d, m); return GUI_COMMAND_NONE; }
     if (input == GUI_INPUT_NEXT) {
-        if (d->screen == GUI_SCREEN_PAGE) gui_dashboard_next_page(d);
+        if (d->screen == GUI_SCREEN_PAGE && d->page==GUI_PAGE_ACCEL_CAL) gui_dashboard_next_view(d);
+        else if (d->screen == GUI_SCREEN_PAGE) gui_dashboard_next_page(d);
         else if (d->screen == GUI_SCREEN_HELP) d->help_page ^= 1;
         else gui_menu_next(&d->menu);
         return GUI_COMMAND_NONE;
     }
     if (input != GUI_INPUT_ENTER) return GUI_COMMAND_NONE;
-    if (d->screen == GUI_SCREEN_PAGE) { gui_dashboard_next_view(d); return GUI_COMMAND_NONE; }
+    if (d->screen == GUI_SCREEN_PAGE) {
+        if (d->page==GUI_PAGE_ACCEL_CAL && m->accel_calibrating && m->accel_cal_phase==UAV_ACCEL_PLACE)
+            return GUI_COMMAND_ACCEL_CONFIRM;
+        gui_dashboard_next_view(d); return GUI_COMMAND_NONE;
+    }
     if (d->screen == GUI_SCREEN_HELP) { open_root(d, 8); return GUI_COMMAND_NONE; }
     unsigned action = d->menu.items[d->menu.selected].action;
     if (d->screen == GUI_SCREEN_ROOT) {
@@ -122,13 +138,20 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
         if (action == MENU_MAG_START && m->mag_calibrating) {
             gui_dashboard_set_page(d, GUI_PAGE_MAG_CAL); return GUI_COMMAND_NONE;
         }
+        if (action==MENU_ACCEL_START && m->accel_calibrating) {
+            gui_dashboard_set_page(d,GUI_PAGE_ACCEL_CAL); return GUI_COMMAND_NONE;
+        }
         d->message = m->state != 0 ? MESSAGE_STATE : !m->flash_ok ? MESSAGE_FLASH
+                     : (action!=MENU_REMOTE_SAVE && (m->remote_calibrating || m->mag_calibrating || m->accel_calibrating)) ? MESSAGE_ACTIVE
                      : action == MENU_REMOTE_START && !m->rc_raw_connected ? MESSAGE_NO_RC
                      : action == MENU_MAG_START && !m->mag_ok ? MESSAGE_MAG
                      : action == MENU_MAG_START && (!m->attitude_valid || m->imu_calibrating || m->imu_cal_failed) ? MESSAGE_IMU : MESSAGE_NONE;
+        if (!d->message && action==MENU_ACCEL_START && (!m->imu_ok || m->imu_calibrating)) d->message=MESSAGE_IMU;
+        if (!d->message && action==MENU_REMOTE_START && m->imu_calibrating) d->message=MESSAGE_IMU;
         if (d->message) { d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE; }
         d->confirm_command = action == MENU_REMOTE_START ? GUI_COMMAND_REMOTE_START
-                             : action == MENU_REMOTE_SAVE ? GUI_COMMAND_REMOTE_SAVE : GUI_COMMAND_MAG_START;
+                             : action == MENU_REMOTE_SAVE ? GUI_COMMAND_REMOTE_SAVE
+                             : action == MENU_ACCEL_START ? GUI_COMMAND_ACCEL_START : GUI_COMMAND_MAG_START;
         d->screen = GUI_SCREEN_CONFIRM;
         gui_menu_open(&d->menu, confirmation, 2, 1); /* Cancel is the initial choice. */
     } else if (d->screen == GUI_SCREEN_CONFIRM) {
@@ -136,6 +159,12 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
         gui_command_t command = (gui_command_t)d->confirm_command;
         if (m->state != 0) { d->message = MESSAGE_STATE; d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE; }
         if (!m->flash_ok) { d->message = MESSAGE_FLASH; d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE; }
+        if (command!=GUI_COMMAND_REMOTE_SAVE && (m->remote_calibrating || m->mag_calibrating || m->accel_calibrating)) {
+            d->message=MESSAGE_ACTIVE; d->screen=GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE;
+        }
+        if (command==GUI_COMMAND_ACCEL_START && (!m->imu_ok || m->imu_calibrating)) {
+            d->message=MESSAGE_IMU; d->screen=GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE;
+        }
         if (command == GUI_COMMAND_REMOTE_START && !m->rc_raw_connected) {
             d->message = MESSAGE_NO_RC; d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE;
         }
@@ -143,6 +172,7 @@ gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const g
             d->message = MESSAGE_IMU; d->screen = GUI_SCREEN_MESSAGE; return GUI_COMMAND_NONE;
         }
         gui_dashboard_set_page(d, command == GUI_COMMAND_REMOTE_SAVE ? GUI_PAGE_REMOTE_CAL
+                                  : command==GUI_COMMAND_ACCEL_START ? GUI_PAGE_ACCEL_CAL
                                   : command == GUI_COMMAND_REMOTE_START ? GUI_PAGE_REMOTE_CAL : GUI_PAGE_MAG_CAL);
         return command;
     }
@@ -338,22 +368,89 @@ static void health(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
         gui_text(c, 76, 48, "PARTIAL TX", GUI_FONT_TINY);
     }
 }
-static void mag_cal(gui_canvas_t *c, const gui_model_t *m) {
+static void mag_cal(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
     static const char *const prompts[] = {"绕三轴旋转", "正在校准", "正在保存", "校准完成", "校准失败"};
     unsigned step = m->mag_calibration_step > 4 ? 4 : m->mag_calibration_step;
-    gui_text(c, 10, 16, prompts[step], GUI_FONT_CN12);
-    gui_text(c, 4, 31, "N", GUI_FONT_TINY);
-    number(c, 12, 31, m->mag_cal_samples, 0, 0, 1, GUI_FONT_TINY);
+    const char *prompt=prompts[step];
+    if (!step) {
+        static const char *const axes[]={"绕X轴慢转","绕Y轴慢转","绕Z轴慢转"};
+        int complete=m->mag_cal_rotation[0]>=100 && m->mag_cal_rotation[1]>=100 && m->mag_cal_rotation[2]>=100;
+        prompt=m->mag_cal_hint==1 ? "请转慢一点":m->mag_cal_hint==2 ? "请转动设备"
+              : complete ? "多换几个方向":axes[m->mag_cal_axis%3];
+        if (view && m->mag_cal_reason>=2 && m->mag_cal_reason<=6)
+            prompt=m->mag_cal_reason==6 || m->mag_cal_reason==4 ? "远离金属重试":"多换几个方向";
+    }
+    gui_text(c, 3, 16, prompt, GUI_FONT_CN12);
+    if (!view) {
+        static const char *const axes[]={"X","Y","Z"};
+        for (unsigned i=0;i<3;i++) {
+            int x=3+(int)i*42;
+            gui_text(c,x,31,axes[i],GUI_FONT_TINY);
+            number(c,x+8,31,m->mag_cal_rotation[i],0,0,1,GUI_FONT_TINY);
+            gui_text(c,x+23,31,"%",GUI_FONT_TINY);
+            gui_bar(c,x,40,36,4,m->mag_cal_rotation[i],0,100);
+        }
+        gui_text(c,3,48,"N",GUI_FONT_TINY);
+        number(c,11,48,m->mag_cal_samples,0,0,1,GUI_FONT_TINY);
+        gui_text(c,39,48,"RMS%",GUI_FONT_TINY);
+        number(c,61,48,m->mag_cal_rms_permille*.1f,1,0,m->mag_cal_quality_ready,GUI_FONT_TINY);
+        gui_text(c,94,48,"2 DETAIL",GUI_FONT_TINY);
+        return;
+    }
+    gui_text(c,3,31,"N",GUI_FONT_TINY);
+    number(c,11,31,m->mag_cal_samples,0,0,1,GUI_FONT_TINY);
+    gui_text(c,42,31,"RMS%",GUI_FONT_TINY);
+    number(c,64,31,m->mag_cal_rms_permille*.1f,1,0,m->mag_cal_quality_ready,GUI_FONT_TINY);
     unsigned octants=0;
-    for (unsigned i=0;i<8;i++) if (m->mag_cal_coverage & (1u<<i)) octants++;
-    gui_text(c, 50, 31, "OCT", GUI_FONT_TINY);
-    number(c, 68, 31, octants, 0, 0, 1, GUI_FONT_TINY);
-    gui_text(c, 78, 31, "/8", GUI_FONT_TINY);
-    gui_bar(c, 4, 40, 120, 4, m->mag_cal_samples, 0, 200);
-    gui_text(c, 4, 48, "RMS%", GUI_FONT_TINY);
-    number(c, 27, 48, m->mag_cal_rms_permille*.1f, 1, 0, m->mag_cal_samples>=200, GUI_FONT_TINY);
-    gui_text(c, 79, 48, "ERR", GUI_FONT_TINY);
-    number(c, 102, 48, m->mag_cal_reason, 0, 0, 1, GUI_FONT_TINY);
+    for (unsigned i=0;i<8;i++) {
+        int covered=m->mag_cal_quality_ready && !!(m->mag_cal_coverage & (1u<<i)); octants+=(unsigned)covered;
+        gui_box(c,96+(int)(i%4)*7,31+(int)(i/4)*8,6,6,covered);
+    }
+    gui_text(c,3,42,"OCT",GUI_FONT_TINY);
+    number(c,21,42,octants,0,0,m->mag_cal_quality_ready,GUI_FONT_TINY);
+    gui_text(c,29,42,"/8 ERR",GUI_FONT_TINY);
+    number(c,59,42,m->mag_cal_reason,0,0,1,GUI_FONT_TINY);
+    gui_bar(c,3,51,120,4,m->mag_cal_samples,0,200);
+}
+static void accel_cal(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
+    static const char *const faces[]={"Z轴朝上","Z轴朝下","X轴朝上","X轴朝下","Y轴朝上","Y轴朝下"};
+    static const char *const labels[]={"Z+","Z-","X+","X-","Y+","Y-"};
+    unsigned target=m->accel_cal_target<6 ? m->accel_cal_target:0;
+    if (view) {
+        vector_row(c,17,"RAW",m->accel_cal_raw,m->imu_ok,1,1);
+        gui_text(c,3,29,"WANT",GUI_FONT_TINY); gui_text(c,25,29,labels[target],GUI_FONT_TINY);
+        gui_text(c,44,29,"NOW",GUI_FONT_TINY);
+        gui_text(c,60,29,m->accel_cal_detected<6 ? labels[m->accel_cal_detected]:"--",GUI_FONT_TINY);
+        gui_text(c,3,40,"水平放置",GUI_FONT_CN12);
+        unsigned axis=target<2 ? 2:target<4 ? 0:1;
+        unsigned first=(axis+1)%3,second=(axis+2)%3;
+        int x=(int)fmaxf(-8,fminf(8,m->accel_cal_raw[first]*6));
+        int y=(int)fmaxf(-8,fminf(8,m->accel_cal_raw[second]*6));
+        gui_circle(c,108,44,10); gui_line(c,98,44,118,44); gui_line(c,108,34,108,54);
+        gui_circle(c,108+x,44-y,2);
+        return;
+    }
+    const char *prompt=faces[target],*detail="摆好按确认";
+    if (m->accel_cal_phase==UAV_ACCEL_SETTLE)
+        detail=m->accel_cal_reason==UAV_ACCEL_REASON_ORIENTATION ? "方向需调整"
+               : m->accel_cal_reason==UAV_ACCEL_REASON_NOISE ? "振动请重采":"请保持静止";
+    else if (m->accel_cal_phase==UAV_ACCEL_SAMPLE) detail="正在采集";
+    else if (m->accel_cal_phase==UAV_ACCEL_FIT) detail="检查六面质量";
+    else if (m->accel_cal_phase==UAV_ACCEL_SAVE) detail="正在保存";
+    else if (m->accel_cal_phase==UAV_ACCEL_DONE) { prompt="六面已完成"; detail="校准完成"; }
+    else if (m->accel_cal_phase==UAV_ACCEL_FAILED) { prompt="校准失败"; detail="返回后重试"; }
+    else if (m->accel_cal_reason==UAV_ACCEL_REASON_FIT) detail="摆正后重采";
+    gui_text(c,3,16,prompt,GUI_FONT_CN12);
+    gui_text(c,3,29,detail,GUI_FONT_CN12);
+    gui_text(c,98,18,"ERR",GUI_FONT_TINY);
+    number(c,116,18,m->accel_cal_reason,0,0,1,GUI_FONT_TINY);
+    gui_bar(c,3,43,120,3,m->accel_cal_samples,0,UAV_ACCEL_CAL_SAMPLES);
+    for (unsigned i=0;i<6;i++) {
+        int x=3+(int)i*20,done=!!(m->accel_cal_faces & (1u<<i));
+        gui_box(c,x,48,18,8,done);
+        if (!done && i==target && (m->now_ms/300)%2) gui_box(c,x-1,47,20,10,0);
+        gui_color(c,(uint8_t)!done); gui_text(c,x+4,49,labels[i],GUI_FONT_TINY); gui_color(c,1);
+    }
 }
 void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t *m) {
     gui_clear(c);
@@ -365,16 +462,19 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
     }
     if (d->screen == GUI_SCREEN_CONFIRM) {
         gui_menu_render(&d->menu, c, d->confirm_command == GUI_COMMAND_REMOTE_SAVE ? "保存校准" : "开始校准",
-                         d->confirm_command == GUI_COMMAND_MAG_START ? "磁场" : "遥控", m->now_ms);
+                         d->confirm_command == GUI_COMMAND_MAG_START ? "磁场"
+                         : d->confirm_command==GUI_COMMAND_ACCEL_START ? "六面" : "遥控", m->now_ms);
         return;
     }
     if (d->screen == GUI_SCREEN_MESSAGE) {
         header(c, "暂不可用", "返回");
         const char *reason = d->message == MESSAGE_STATE ? "等待锁定"
+                             : d->message==MESSAGE_ACTIVE ? "校准进行中"
                              : d->message == MESSAGE_FLASH ? "闪存异常"
                              : d->message == MESSAGE_NO_RC ? "遥控未连接"
                              : d->message == MESSAGE_MAG ? "磁场未就绪" : m->imu_cal_failed ? "校准失败" : "等待校准";
         const char *detail = d->message == MESSAGE_STATE ? "请先锁定飞控"
+                             : d->message==MESSAGE_ACTIVE ? "请先完成当前校准"
                              : d->message == MESSAGE_FLASH ? "校准数据无法保存"
                              : d->message == MESSAGE_NO_RC ? "请先连接接收机"
                              : d->message == MESSAGE_MAG ? "请等待器件初始化" : m->imu_cal_failed ? "请先静置设备" : "请静置等待校准";
@@ -395,6 +495,7 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
     }
     const char *title = d->page == GUI_PAGE_REMOTE_CAL ? "遥控校准"
                        : d->page == GUI_PAGE_MAG_CAL ? "磁力校准"
+                       : d->page == GUI_PAGE_ACCEL_CAL ? "加速度校准"
                        : d->page == GUI_PAGE_ATTITUDE && d->view ? "人工地平"
                        : d->page == GUI_PAGE_REMOTE && d->view >= 2 ? "原始通道"
                        : d->page <= GUI_PAGE_COUNT ? titles[d->page] : "显示页面";
@@ -408,7 +509,8 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
     case GUI_PAGE_FLOW: flow(c, d, m); break;
     case GUI_PAGE_HEALTH: health(c, m, d->view); break;
     case GUI_PAGE_REMOTE_CAL: remote(c, m, d->view, 1); break;
-    case GUI_PAGE_MAG_CAL: mag_cal(c, m); break;
+    case GUI_PAGE_MAG_CAL: mag_cal(c, m, d->view); break;
+    case GUI_PAGE_ACCEL_CAL: accel_cal(c,m,d->view); break;
     default: break;
     }
     footer(c, d);

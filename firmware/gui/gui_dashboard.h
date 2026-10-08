@@ -8,12 +8,13 @@
 enum {
     GUI_PAGE_OVERVIEW = 1, GUI_PAGE_ATTITUDE, GUI_PAGE_TRENDS, GUI_PAGE_SENSORS,
     GUI_PAGE_REMOTE, GUI_PAGE_FLOW, GUI_PAGE_HEALTH,
-    GUI_PAGE_REMOTE_CAL = 19, GUI_PAGE_MAG_CAL = 20
+    GUI_PAGE_REMOTE_CAL = 19, GUI_PAGE_MAG_CAL = 20, GUI_PAGE_ACCEL_CAL=21
 };
 typedef enum { GUI_INPUT_NEXT = 1, GUI_INPUT_ENTER, GUI_INPUT_BACK, GUI_INPUT_CALIBRATION,
                GUI_INPUT_NEXT_PAGE, GUI_INPUT_NEXT_VIEW } gui_input_t;
 typedef enum { GUI_COMMAND_NONE, GUI_COMMAND_REMOTE_START, GUI_COMMAND_REMOTE_SAVE,
-               GUI_COMMAND_MAG_START, GUI_COMMAND_MAG_CANCEL } gui_command_t;
+               GUI_COMMAND_MAG_START, GUI_COMMAND_MAG_CANCEL, GUI_COMMAND_ACCEL_START,
+               GUI_COMMAND_ACCEL_CONFIRM, GUI_COMMAND_ACCEL_CANCEL } gui_command_t;
 typedef enum { GUI_SCREEN_ROOT, GUI_SCREEN_PAGE, GUI_SCREEN_CALIBRATION,
                GUI_SCREEN_HELP, GUI_SCREEN_CONFIRM, GUI_SCREEN_MESSAGE } gui_screen_t;
 /* Presentation-only snapshot. Units: rad, rad/s, m/s2, uT, C, Pa, flow mm/s/mm.
@@ -30,6 +31,10 @@ typedef struct {
     uint8_t imu_ok, mag_ok, baro_ok, flash_ok, flow_valid, flow_quality;
     uint16_t mag_cal_samples, mag_cal_rms_permille;
     uint8_t mag_cal_coverage, mag_cal_reason;
+    uint8_t mag_cal_rotation[3], mag_cal_axis, mag_cal_hint, mag_cal_quality_ready;
+    uint8_t accel_calibrating, accel_cal_faces, accel_cal_target, accel_cal_detected, accel_cal_phase, accel_cal_reason;
+    uint16_t accel_cal_samples, accel_cal_rms_permille;
+    float accel_cal_raw[3];
     gui_present_stats_t display_stats;
     uint16_t render_ms;
 } gui_model_t;

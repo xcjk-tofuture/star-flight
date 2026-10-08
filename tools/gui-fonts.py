@@ -25,7 +25,7 @@ for file in [*sorted((root / "firmware/gui").glob("*.c")), *sorted((root / "firm
              destination / "characters.txt"]:
     if file.exists():
         characters.update(ord(c) for c in file.read_text(encoding="utf-8") if ord(c) >= 128)
-(destination / "codepoints.txt").write_text("\n".join(f"U+{c:04X} {chr(c)}" for c in sorted(characters)), encoding="utf-8")
+(destination / "codepoints.txt").write_text("\n".join(f"U+{c:04X} {chr(c)}" for c in sorted(characters)), encoding="utf-8", newline="\n")
 
 def subset(source, target):
     header, blocks = [], {}
@@ -49,9 +49,9 @@ def subset(source, target):
     if missing:
         raise RuntimeError(f"Missing glyphs in {source.name}: " + ", ".join(f"U+{v:04X}" for v in sorted(missing)))
     with target.open("w", encoding="utf-8", newline="\n") as out:
-        out.writelines(header)
+        out.writelines(line.rstrip()+"\n" for line in header)
         out.write(f"CHARS {len(blocks)}\n")
-        for codepoint in sorted(blocks): out.writelines(blocks[codepoint])
+        for codepoint in sorted(blocks): out.writelines(line.rstrip()+"\n" for line in blocks[codepoint])
         out.write("ENDFONT\n")
 
 for size, bdf in [(12, "wenquanyi_9pt.bdf"), (16, "wenquanyi_12pt.bdf")]:
@@ -68,5 +68,6 @@ for size, bdf in [(12, "wenquanyi_9pt.bdf"), (16, "wenquanyi_12pt.bdf")]:
  * Derived from U8g2 d6c8499c5f2707cac8eccd09fd8f677d12b17977.
  */
 """
-    output.write_text(notice + output.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+    generated="\n".join(line.rstrip() for line in output.read_text(encoding="utf-8").splitlines())+"\n"
+    output.write_text(notice + generated, encoding="utf-8", newline="\n")
 print(f"Built 12px and 16px font subsets with {len(characters)} glyphs: {destination}")

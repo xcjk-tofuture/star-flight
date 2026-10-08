@@ -13,6 +13,7 @@
 #include "log_service.h"
 #include "boot_log.h"
 #include "gui_oled_config.h"
+#include "accel_calibration.h"
 #include <string.h>
 osThreadId OLEDTaskHandle;
 extern uint8_t Bmi088Init_Flag, AK8975Flag, SPL06Flag;
@@ -70,6 +71,9 @@ static void process_navigation(void) {
         else if (command == GUI_COMMAND_REMOTE_SAVE) sbus_request_calibration(1);
         else if (command == GUI_COMMAND_MAG_START) sensors_request_mag_calibration();
         else if (command == GUI_COMMAND_MAG_CANCEL) sensors_cancel_mag_calibration();
+        else if (command == GUI_COMMAND_ACCEL_START) sensors_request_accel_calibration();
+        else if (command == GUI_COMMAND_ACCEL_CONFIRM) sensors_confirm_accel_face();
+        else if (command == GUI_COMMAND_ACCEL_CANCEL) sensors_cancel_accel_calibration();
     }
 }
 static void read_model(void) {
@@ -116,6 +120,15 @@ static void read_model(void) {
     model.mag_calibration_step=mag_cal.step; model.mag_cal_samples=mag_cal.samples;
     model.mag_cal_rms_permille=mag_cal.rms_permille; model.mag_cal_coverage=mag_cal.coverage;
     model.mag_cal_reason=mag_cal.reason;
+    memcpy(model.mag_cal_rotation,mag_cal.rotation,sizeof(mag_cal.rotation));
+    model.mag_cal_axis=mag_cal.axis; model.mag_cal_hint=mag_cal.hint; model.mag_cal_quality_ready=mag_cal.quality_ready;
+    sensor_accel_calibration_stats_t accel_cal;
+    sensor_accel_calibration_stats_read(&accel_cal);
+    model.accel_calibrating=accel_cal.active; model.accel_cal_faces=accel_cal.faces;
+    model.accel_cal_target=accel_cal.target; model.accel_cal_detected=accel_cal.detected;
+    model.accel_cal_phase=accel_cal.phase; model.accel_cal_reason=accel_cal.reason;
+    model.accel_cal_samples=accel_cal.samples; model.accel_cal_rms_permille=accel_cal.rms_permille;
+    memcpy(model.accel_cal_raw,accel_cal.raw_acc,sizeof(accel_cal.raw_acc));
     model.imu_ok = !Bmi088Init_Flag; model.mag_ok = !AK8975Flag; model.baro_ok = !SPL06Flag;
     model.flash_ok = (uint8_t)app_boot_flash_ready();
     model.flow_valid = !!flow.flowFlag; model.flow_quality = flow.flowConf;
@@ -136,6 +149,7 @@ void OLED_Task_Proc(void const *argument) {
     TickType_t wake = xTaskGetTickCount();
     uint8_t mag_cal_was_active = 0;
     uint8_t remote_cal_was_active = 0;
+    uint8_t accel_cal_was_active=0;
     for (;;) {
         uint32_t begin = platform_millis();
         if (!configured && (uint32_t)(begin-last_init_attempt) >= 1000u) {
@@ -151,8 +165,16 @@ void OLED_Task_Proc(void const *argument) {
             remote_cal_was_active=0;
         }
         if (model.mag_calibrating) mag_cal_was_active = 1;
-        else if (mag_cal_was_active && dashboard.page == GUI_PAGE_MAG_CAL && model.mag_calibration_step == SENSOR_MAG_DONE) {
-            gui_dashboard_set_page(&dashboard, GUI_PAGE_OVERVIEW); mag_cal_was_active = 0;
+        else if (mag_cal_was_active) {
+            if (dashboard.page==GUI_PAGE_MAG_CAL && model.mag_calibration_step==SENSOR_MAG_DONE)
+                gui_dashboard_set_page(&dashboard,GUI_PAGE_OVERVIEW);
+            mag_cal_was_active=0;
+        }
+        if (model.accel_calibrating) accel_cal_was_active=1;
+        else if (accel_cal_was_active) {
+            if (dashboard.page==GUI_PAGE_ACCEL_CAL && model.accel_cal_phase==UAV_ACCEL_DONE)
+                gui_dashboard_set_page(&dashboard,GUI_PAGE_OVERVIEW);
+            accel_cal_was_active=0;
         }
         gui_dashboard_update(&dashboard, &model);
         gui_dashboard_render(&dashboard, &canvas, &model);
