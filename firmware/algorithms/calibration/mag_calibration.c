@@ -8,6 +8,72 @@ void uav_mag_correct(const float m[9], const float bias[3], const float raw[3], 
 void uav_mag_calibrator_init(uav_mag_calibrator_t *c) {
     memset(c,0,sizeof(*c)); c->rng=0x5a17c9e3u;
 }
+
+static int sphere_direction(const float matrix[9], const float bias[3], const float raw[3], float d[3]) {
+    uav_mag_correct(matrix,bias,raw,d);
+    float norm=sqrtf(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);
+    if (!isfinite(norm) || norm<1e-5f) { memset(d,0,3*sizeof(float)); return 0; }
+    for (unsigned i=0;i<3;i++) d[i]/=norm;
+    return 1;
+}
+static unsigned sphere_bin(const float d[3]) {
+    unsigned band=(unsigned)fmaxf(0,fminf(3,(d[2]+1)*2));
+    float azimuth=atan2f(d[1],d[0])+3.14159265359f;
+    return band*8+((unsigned)(azimuth*(8/6.28318530718f))&7u);
+}
+static void bin_center(unsigned bin, float d[3]) {
+    float z=-.75f+.5f*(bin/8),angle=-3.14159265359f+((bin%8)+.5f)*(6.28318530718f/8);
+    float radius=sqrtf(1-z*z); d[0]=radius*cosf(angle); d[1]=radius*sinf(angle); d[2]=z;
+}
+void uav_mag_calibrator_update_cursor(uav_mag_calibrator_t *c, const float current[3]) {
+    c->sphere.cursor_valid=(uint8_t)sphere_direction(c->preview_matrix,c->preview_bias,current,c->sphere.cursor);
+}
+void uav_mag_calibrator_refresh_sphere(uav_mag_calibrator_t *c,
+                                      const uav_mag_calibration_t *model, const float current[3], uint32_t ms) {
+    uav_mag_calibration_t check={0};
+    if (model) { check=*model; check.coverage=255; check.samples=UAV_MAG_CAL_MIN_SAMPLES; }
+    int fitted=model && model->samples && uav_mag_calibration_valid(&check);
+    float minimum[3]={0},maximum[3]={0};
+    if (c->count) {
+        memcpy(minimum,c->points[0],sizeof(minimum)); memcpy(maximum,minimum,sizeof(maximum));
+        for (unsigned i=0;i<c->count;i++) for (unsigned j=0;j<3;j++) {
+            if (c->points[i][j]<minimum[j]) minimum[j]=c->points[i][j];
+            if (c->points[i][j]>maximum[j]) maximum[j]=c->points[i][j];
+        }
+    }
+    if (fitted) {
+        memcpy(c->preview_bias,model->bias,sizeof(c->preview_bias));
+        memcpy(c->preview_matrix,model->matrix,sizeof(c->preview_matrix));
+    } else {
+        memset(c->preview_matrix,0,sizeof(c->preview_matrix));
+        for (unsigned i=0;i<3;i++) {
+            c->preview_bias[i]=.5f*(minimum[i]+maximum[i]);
+            c->preview_matrix[3*i+i]=1/fmaxf(10,.5f*(maximum[i]-minimum[i]));
+        }
+    }
+    memset(c->bin_count,0,sizeof(c->bin_count)); c->sphere.mask=0; c->sphere.covered=0;
+    for (unsigned i=0;i<c->count;i++) {
+        float d[3];
+        if (sphere_direction(c->preview_matrix,c->preview_bias,c->points[i],d)) c->bin_count[sphere_bin(d)]++;
+    }
+    c->sphere.ready=c->count>=24;
+    for (unsigned i=0;i<3;i++) if (maximum[i]-minimum[i]<20) c->sphere.ready=0;
+    c->sphere.fitted=(uint8_t)fitted;
+    for (unsigned i=0;i<UAV_MAG_SPHERE_BINS;i++) if (c->bin_count[i]>=3 && c->sphere.ready) {
+        c->sphere.mask|=1u<<i; c->sphere.covered++;
+    }
+    uav_mag_calibrator_update_cursor(c,current);
+    unsigned target=0; float best=-2;
+    for (unsigned i=0;i<UAV_MAG_SPHERE_BINS;i++) {
+        float center[3]; bin_center(i,center);
+        float proximity=center[0]*c->sphere.cursor[0]+center[1]*c->sphere.cursor[1]+center[2]*c->sphere.cursor[2];
+        if (c->bin_count[i]<c->bin_count[target] || (c->bin_count[i]==c->bin_count[target] && proximity>best)) {
+            target=i; best=proximity;
+        }
+    }
+    c->sphere.target=(uint8_t)target; bin_center(target,c->sphere.goal); c->sphere_ms=ms;
+}
+
 int uav_mag_calibrator_feed(uav_mag_calibrator_t *c, const float raw[3], uint32_t ms) {
     float change=0;
     for (unsigned i=0;i<3;i++) {
