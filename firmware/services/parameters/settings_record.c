@@ -2,7 +2,7 @@
 #include <string.h>
 static const uint16_t minimum[UAV_SETTING_COUNT]={0,1,0,10,300,0,0,0};
 static const uint16_t maximum[UAV_SETTING_COUNT]={2,7,1,100,550,5000,5000,2000};
-static const uint16_t steps[UAV_SETTING_COUNT]={1,1,1,5,5,50,50,10};
+static const uint16_t steps[UAV_SETTING_COUNT]={1,1,1,5,5,5,50,5};
 unsigned uav_settings_min(unsigned f) { return f<UAV_SETTING_COUNT ? minimum[f]:0; }
 unsigned uav_settings_max(unsigned f) { return f<UAV_SETTING_COUNT ? maximum[f]:0; }
 unsigned uav_settings_step(unsigned f) { return f<UAV_SETTING_COUNT ? steps[f]:0; }
