@@ -8,6 +8,7 @@ STM32F407 / FreeRTOS 无人机固件。
 - [构建与验证](docs/BUILD.md)
 - [串口协议与接口](docs/PROTOCOL.md)
 - [中文菜单、图表与显示移植](docs/GUI.md)
+- [遥控接收与未校准状态排查](docs/RC_LINK.md)
 - [启动参数与 USART1 日志](docs/UART_LOG.md)
 - [IMU采集、滤波、姿态与校准](docs/IMU_PIPELINE.md)
 - [手动校准与数据存储现状](docs/CALIBRATION.md)

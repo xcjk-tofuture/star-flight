@@ -62,6 +62,9 @@ powershell -ExecutionPolicy Bypass -File .\tools\uart-monitor.ps1 -Port COM7
   手动校准只有`COMPLETE saved=1 readback=1`才表示已保存并用于融合；等待写入时不提前报成功。
 - 六面加速度系数启动打印`ACC_CAL loaded faces=6`及零偏/比例；采集中记录每面完成、方向/静置/噪声原因及偏斜重采。
   保存成功为`ACC_CAL COMPLETE saved=1 readback=1 applied_before_LPF=1`；诊断首个sequence涵盖三类IMU校准记录。
+- `SBUS`每5秒记录DMA块/字节、有效/错误帧、队列丢弃、frame-lost/failsafe、接收运行状态、原始链路、校准可用性、无效通道掩码及数据年龄。
+  `raw=1 cal=0`表示已收到健康数据但范围未校准，不是接收机未连接；`invalid` bit0–7分别对应CH1–CH8。
+  UART错误值为读取时HAL状态，不是累计错误次数；即使错误重启清零，`chunks/bytes/bad`仍帮助定位无数据或格式不符。
 - 每个资源初始化的开始、返回值和剩余堆；每个任务的句柄、优先级、配置栈大小。
 - 调度器启动情况、遥测周期、LOG 命令和缓存大小。
 - PC 任务运行约两秒和八秒后：传感器初始化标志、姿态有效标志、实际 ID、传感器数据、UART 发送统计、OLED/PC/Sensor 历史最小栈余量、堆余量及日志丢弃数。
