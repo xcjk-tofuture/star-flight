@@ -125,8 +125,8 @@ static void process_radio(void) {
         context.control_context=(uint16_t)gui_tuning_context(&dashboard.tuning);
         if (dashboard.tuning.editing) {
             unsigned field=gui_tuning_field(&dashboard.tuning),step=uav_settings_step(field),minimum=uav_settings_min(field);
-            context.view_count=(uint8_t)((uav_settings_max(field)-minimum)/step+1);
-            context.view_index=(uint8_t)((model.settings_value[field]-minimum)/step);
+            context.view_count=(uint16_t)((uav_settings_max(field)-minimum)/step+1);
+            context.view_index=(uint16_t)((model.settings_value[field]-minimum)/step);
         } else {
             context.select_count=4; context.select_index=dashboard.tuning.selected;
             context.view_count=dashboard.tuning.module->page_count; context.view_index=dashboard.tuning.page;
@@ -138,8 +138,8 @@ static void process_radio(void) {
         if (dashboard.screen==GUI_SCREEN_EDIT) {
             context.control_context=dashboard.edit_field;
             unsigned field=dashboard.edit_field,step=uav_settings_step(field),minimum=uav_settings_min(field);
-            context.view_count=(uint8_t)((uav_settings_max(field)-minimum)/step+1);
-            context.view_index=(uint8_t)((model.settings_value[field]-minimum)/step);
+            context.view_count=(uint16_t)((uav_settings_max(field)-minimum)/step+1);
+            context.view_index=(uint16_t)((model.settings_value[field]-minimum)/step);
         }
     } else if (dashboard.screen==GUI_SCREEN_HELP) {
         context.select_count=2; context.select_index=dashboard.help_page;
