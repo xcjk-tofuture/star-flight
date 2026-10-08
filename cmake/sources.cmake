@@ -88,6 +88,7 @@ set(FIRMWARE_SOURCES
   firmware/algorithms/filter/biquad.c
   firmware/algorithms/attitude/fusion.c
   firmware/services/imu_pipeline.c
+  firmware/services/rc_ui.c
   firmware/services/beeper.c
   firmware/platform/stm32/beeper_port.c
   firmware/services/sbus_stream.c

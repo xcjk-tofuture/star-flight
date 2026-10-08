@@ -44,9 +44,15 @@ void sbus_snapshot(_sbus_ch_cal_struct *out) {
 }
 _sbus_ch_struct SBUS_CH;
 static _sbus_ch_struct published_raw;
+static rc_ui_frame_t published_ui;
+static uint8_t calibration_result;
+uint8_t sbus_calibration_result(void) { return calibration_result; }
+void sbus_ui_snapshot(rc_ui_frame_t *out) {
+    taskENTER_CRITICAL(); *out=published_ui; taskEXIT_CRITICAL();
+}
 void sbus_uart_error_isr(uint32_t error) {
     uav_sbus_rx_error_isr(error);
-    SBUS_CH.Connect_State=0; published_raw.Connect_State=0; CAL_SBUS_CH.Connect_State=0;
+    SBUS_CH.Connect_State=0; published_raw.Connect_State=0; CAL_SBUS_CH.Connect_State=0; published_ui.connected=0;
 }
 void sbus_raw_snapshot(_sbus_ch_struct *out) {
     taskENTER_CRITICAL();
@@ -54,13 +60,19 @@ void sbus_raw_snapshot(_sbus_ch_struct *out) {
     taskEXIT_CRITICAL();
 }
 
-static int remote_parameters_valid(void) {
+static int ranges_valid(const _sbus_ch_struct *p) {
 #define RANGE_OK(i)                                                                                \
-    (SBUS_CH.CH##i##_MAX <= 2047 && SBUS_CH.CH##i##_MAX > SBUS_CH.CH##i##_MIN &&                   \
-     SBUS_CH.CH##i##_MAX - SBUS_CH.CH##i##_MIN >= 100)
+    (p->CH##i##_MAX <= 2047 && p->CH##i##_MAX > p->CH##i##_MIN && p->CH##i##_MAX - p->CH##i##_MIN >= 100)
     return RANGE_OK(1) && RANGE_OK(2) && RANGE_OK(3) && RANGE_OK(4) && RANGE_OK(5) && RANGE_OK(6) &&
            RANGE_OK(7) && RANGE_OK(8);
 #undef RANGE_OK
+}
+static int remote_parameters_valid(void) { return ranges_valid(&SBUS_CH); }
+static void map_values(const _sbus_ch_struct *raw, const _sbus_ch_struct *range, uint16_t out[8]) {
+#define MAP_CHANNEL(i) out[(i)-1]=(uint16_t)Sbus_To_Range(raw->CH##i,1000,2000,range->CH##i##_MIN,range->CH##i##_MAX)
+    MAP_CHANNEL(1); MAP_CHANNEL(2); MAP_CHANNEL(3); MAP_CHANNEL(4);
+    MAP_CHANNEL(5); MAP_CHANNEL(6); MAP_CHANNEL(7); MAP_CHANNEL(8);
+#undef MAP_CHANNEL
 }
 static u8 remoteCaliFlag = 0;
 
@@ -120,7 +132,7 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
         if (restarted) {
             stream.used=0; receiver_seen=frame_seen=0;
             SBUS_CH.Connect_State=0;
-            taskENTER_CRITICAL(); published_raw.Connect_State=0; CAL_SBUS_CH.Connect_State=0; taskEXIT_CRITICAL();
+            taskENTER_CRITICAL(); published_raw.Connect_State=0; CAL_SBUS_CH.Connect_State=0; published_ui.connected=0; taskEXIT_CRITICAL();
             xQueueReset(sbus_frames);
             if (restarted>0) uav_logf("INFO","SBUS_RX","DMA restarted; awaiting fresh frame");
         }
@@ -140,6 +152,7 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
         }
         if ((request & 1u) && !remote_save_ticket) {
             original_calibration=SBUS_CH;
+            calibration_result=0;
             remoteCaliFlag = 1;
             remoteCaliSaveFlashFlag = 0;
 #define RESET_RANGE(i)                                                                             \
@@ -163,6 +176,7 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
             RESTORE_RANGE(5); RESTORE_RANGE(6); RESTORE_RANGE(7); RESTORE_RANGE(8);
 #undef RESTORE_RANGE
             remoteCaliFlag=0; remoteCaliSaveFlashFlag=0;
+            calibration_result=4;
             uav_logf("INFO","RC_CAL","cancelled; previous ranges restored");
         }
         if (remote_save_ticket) {
@@ -170,6 +184,7 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
             if (result) {
                 remote_save_ticket=0; remoteCaliSaveFlashFlag=0;
                 if (result>0) remoteCaliFlag=0;
+                calibration_result=result>0 ? 2:3;
                 uav_logf(result>0 ? "INFO":"ERROR","RC_CAL","save verified=%u result=%d retry_on_failure=1",
                          (unsigned)(result>0),result);
             }
@@ -211,6 +226,15 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
         taskENTER_CRITICAL();
         if (uav_sbus_rx_pending()) { SBUS_CH.Connect_State=0; CAL_SBUS_CH.Connect_State=0; }
         published_raw = SBUS_CH;
+        taskEXIT_CRITICAL();
+        rc_ui_frame_t ui={.sample_ms=last_frame_ms};
+        const _sbus_ch_struct *range=remoteCaliFlag && ranges_valid(&original_calibration) ? &original_calibration:&SBUS_CH;
+        if (SBUS_CH.Connect_State && ranges_valid(range) && !remote_save_ticket) {
+            map_values(&SBUS_CH,range,ui.channels); ui.connected=1;
+        }
+        taskENTER_CRITICAL();
+        if (uav_sbus_rx_pending() || !uav_sbus_rx_running()) ui.connected=0;
+        published_ui=ui;
         taskEXIT_CRITICAL();
         if ((uint32_t)(platform_millis()-report_ms)>=5000u) {
             report_ms=platform_millis(); sbus_diagnostics_t d; sbus_diagnostics_read(&d);
@@ -256,6 +280,7 @@ void Remote_Channel_Calibration() {
     if (remoteCaliSaveFlashFlag && !remote_save_ticket) {
         if (remote_parameters_valid() && UAV_Write_Param_Remote_Ticket(SBUS_CH, &remote_save_ticket) == 0) {
             remoteCaliSaveFlashFlag = 0;
+            calibration_result=1;
         }
     }
 }

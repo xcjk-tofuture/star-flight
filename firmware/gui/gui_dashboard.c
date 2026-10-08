@@ -42,6 +42,7 @@ static const char *status(const gui_model_t *m) {
     if (!m->rc_raw_connected) return m->rc_receiver_present ? "遥控失联":"待遥控";
     if (!m->rc_parameters_valid) return "遥控待校";
     if (!m->rc_connected) return "遥控未就绪";
+    if (m->rc_ui_active) return m->rc_ui_ready ? "锁定遥控":"等待回中";
     return m->state == 3 ? "紧急" : m->state == 2 ? "飞行" : m->state == 1 ? "解锁" : "锁定";
 }
 static void number(gui_canvas_t *c, int x, int y, float value, unsigned decimals,
@@ -58,7 +59,14 @@ static void header(gui_canvas_t *c, const char *title, const char *badge) {
     gui_color(c, 0); gui_text(c, GUI_WIDTH-width+3, 0, badge, GUI_FONT_CN12); gui_color(c, 1);
     gui_line(c, 0, 14, GUI_WIDTH-1, 14);
 }
-static void footer(gui_canvas_t *c, const gui_dashboard_t *d) {
+static void remote_footer(gui_canvas_t *c, const gui_dashboard_t *d, const gui_model_t *m) {
+    if (!m->rc_ui_active) return;
+    gui_color(c,0); gui_box(c,0,57,128,7,1); gui_color(c,1);
+    gui_text(c,1,58,!m->rc_ui_ready ? "RC: CENTER STICKS FIRST"
+        : m->remote_calibrating && d->screen==GUI_SCREEN_PAGE && d->page==GUI_PAGE_REMOTE_CAL ? "YAW> HOLD SAVE  YAW< CANCEL"
+        : "CH2 SELECT CH1 OK/BACK 7/8 KNOB",GUI_FONT_TINY);
+}
+static void footer(gui_canvas_t *c, const gui_dashboard_t *d, const gui_model_t *m) {
     const char *hint = d->page == GUI_PAGE_REMOTE_CAL ? "2 VIEW 1HOLD SAVE 2HOLD CANCEL"
                       : d->page == GUI_PAGE_ACCEL_CAL ? "1/2 VIEW HOLD2 CANCEL"
                       : d->page == GUI_PAGE_MAG_CAL ? "2 FLIP HOLD2 CANCEL"
@@ -67,8 +75,9 @@ static void footer(gui_canvas_t *c, const gui_dashboard_t *d) {
     if (d->page <= GUI_PAGE_COUNT)
         for (unsigned i = 1; i <= GUI_PAGE_COUNT; i++)
             gui_box(c, 91+(int)i*4, 60, 3, 3, i == d->page);
+    remote_footer(c,d,m);
 }
-static unsigned view_count(uint8_t page) {
+unsigned gui_dashboard_view_count(uint8_t page) {
     if (page == GUI_PAGE_TRENDS) return GUI_CHART_COUNT;
     if (page == GUI_PAGE_SENSORS || page == GUI_PAGE_HEALTH) return 3;
     if (page == GUI_PAGE_REMOTE) return 4;
@@ -90,13 +99,23 @@ void gui_dashboard_next_page(gui_dashboard_t *d) {
     gui_dashboard_set_page(d, d->page >= GUI_PAGE_COUNT ? 1 : d->page + 1);
 }
 void gui_dashboard_next_view(gui_dashboard_t *d) {
-    d->view = (uint8_t)((d->view + 1u) % view_count(d->page));
+    d->view = (uint8_t)((d->view + 1u) % gui_dashboard_view_count(d->page));
 }
 gui_command_t gui_dashboard_input(gui_dashboard_t *d, gui_input_t input, const gui_model_t *m) {
     if (d->screen == GUI_SCREEN_CALIBRATION)
         d->menu.items = m->remote_calibrating ? calibration_save : calibration_start;
     if (input == GUI_INPUT_NEXT_PAGE) { gui_dashboard_next_page(d); return GUI_COMMAND_NONE; }
     if (input == GUI_INPUT_NEXT_VIEW) { gui_dashboard_next_view(d); return GUI_COMMAND_NONE; }
+    if (input==GUI_INPUT_PREVIOUS) {
+        if (d->screen==GUI_SCREEN_PAGE) {
+            if (d->page>GUI_PAGE_COUNT)
+                d->view=(uint8_t)((d->view+gui_dashboard_view_count(d->page)-1)%gui_dashboard_view_count(d->page));
+            else gui_dashboard_set_page(d,d->page<=1 ? GUI_PAGE_COUNT:d->page-1);
+        } else if (d->screen==GUI_SCREEN_HELP) d->help_page^=1;
+        else if (d->screen==GUI_SCREEN_MESSAGE) open_calibration(d,m);
+        else gui_menu_previous(&d->menu);
+        return GUI_COMMAND_NONE;
+    }
     if (input == GUI_INPUT_BACK) {
         if (d->screen == GUI_SCREEN_PAGE && d->page == GUI_PAGE_MAG_CAL && m->mag_calibrating) {
             if (m->mag_calibration_step >= 2) return GUI_COMMAND_NONE;
@@ -488,12 +507,14 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
         if (d->screen == GUI_SCREEN_CALIBRATION)
             d->menu.items = m->remote_calibrating ? calibration_save : calibration_start;
         gui_menu_render(&d->menu, c, d->screen == GUI_SCREEN_ROOT ? "主菜单" : "校准管理", status(m), m->now_ms);
+        remote_footer(c,d,m);
         return;
     }
     if (d->screen == GUI_SCREEN_CONFIRM) {
         gui_menu_render(&d->menu, c, d->confirm_command == GUI_COMMAND_REMOTE_SAVE ? "保存校准" : "开始校准",
                          d->confirm_command == GUI_COMMAND_MAG_START ? "磁场"
                          : d->confirm_command==GUI_COMMAND_ACCEL_START ? "六面" : "遥控", m->now_ms);
+        remote_footer(c,d,m);
         return;
     }
     if (d->screen == GUI_SCREEN_MESSAGE) {
@@ -511,6 +532,7 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
         gui_text(c, (GUI_WIDTH-gui_text_width(c, reason, GUI_FONT_CN16))/2, 20, reason, GUI_FONT_CN16);
         gui_text(c, (GUI_WIDTH-gui_text_width(c, detail, GUI_FONT_CN12))/2, 41, detail, GUI_FONT_CN12);
         gui_text(c, 1, 58, "1/2 BACK  HOLD1 MENU", GUI_FONT_TINY);
+        remote_footer(c,d,m);
         return;
     }
     if (d->screen == GUI_SCREEN_HELP) {
@@ -525,6 +547,7 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
             gui_text(c,4,16+(int)i*13,hint,GUI_FONT_CN12);
         }
         gui_text(c, 1, 58, "1 NEXT 2 BACK HOLD=600ms", GUI_FONT_TINY);
+        remote_footer(c,d,m);
         return;
     }
     const char *title = d->page == GUI_PAGE_REMOTE_CAL ? "遥控校准"
@@ -547,5 +570,5 @@ void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t
     case GUI_PAGE_ACCEL_CAL: accel_cal(c,m,d->view); break;
     default: break;
     }
-    footer(c, d);
+    footer(c, d, m);
 }

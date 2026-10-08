@@ -17,6 +17,16 @@ void gui_menu_next(gui_menu_t *m) {
     if (old_window != m->selected/MENU_VISIBLE_ROWS)
         m->highlight_q8 = (int16_t)((MENU_FIRST_Y + (m->selected % MENU_VISIBLE_ROWS)*MENU_ROW_PITCH)*256);
 }
+void gui_menu_select(gui_menu_t *m, uint8_t selection) {
+    if (!m->count || selection>=m->count) return;
+    unsigned previous=m->selected/MENU_VISIBLE_ROWS;
+    m->selected=selection;
+    if (previous!=m->selected/MENU_VISIBLE_ROWS)
+        m->highlight_q8=(int16_t)((MENU_FIRST_Y+(m->selected%MENU_VISIBLE_ROWS)*MENU_ROW_PITCH)*256);
+}
+void gui_menu_previous(gui_menu_t *m) {
+    if (m->count) gui_menu_select(m,(uint8_t)((m->selected+m->count-1)%m->count));
+}
 void gui_menu_render(gui_menu_t *m, gui_canvas_t *c, const char *title,
                       const char *status, uint32_t now) {
     if (!m->items || !m->count) return;

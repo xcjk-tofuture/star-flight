@@ -11,7 +11,7 @@ enum {
     GUI_PAGE_REMOTE_CAL = 19, GUI_PAGE_MAG_CAL = 20, GUI_PAGE_ACCEL_CAL=21
 };
 typedef enum { GUI_INPUT_NEXT = 1, GUI_INPUT_ENTER, GUI_INPUT_BACK, GUI_INPUT_CALIBRATION,
-               GUI_INPUT_NEXT_PAGE, GUI_INPUT_NEXT_VIEW } gui_input_t;
+               GUI_INPUT_NEXT_PAGE, GUI_INPUT_NEXT_VIEW, GUI_INPUT_PREVIOUS } gui_input_t;
 typedef enum { GUI_COMMAND_NONE, GUI_COMMAND_REMOTE_START, GUI_COMMAND_REMOTE_SAVE,
                GUI_COMMAND_MAG_START, GUI_COMMAND_MAG_CANCEL, GUI_COMMAND_ACCEL_START,
                GUI_COMMAND_ACCEL_CANCEL, GUI_COMMAND_REMOTE_CANCEL } gui_command_t;
@@ -28,6 +28,7 @@ typedef struct {
     uint16_t remote_raw[8], remote_pwm[8], remote_min[8], remote_max[8];
     uint8_t attitude_valid, state, rc_connected, rc_raw_connected, remote_calibrating;
     uint8_t rc_receiver_present, rc_parameters_valid, remote_saving, rc_invalid_ranges;
+    uint8_t rc_ui_active, rc_ui_ready, remote_result;
     uint8_t imu_calibrating, imu_cal_failed, fusion_mag_used, mag_calibrating, mag_calibration_step;
     uint8_t imu_ok, mag_ok, baro_ok, flash_ok, flow_valid, flow_quality;
     uint16_t mag_cal_samples, mag_cal_rms_permille;
@@ -52,6 +53,7 @@ void gui_dashboard_init(gui_dashboard_t *dashboard);
 void gui_dashboard_set_page(gui_dashboard_t *dashboard, uint8_t page);
 void gui_dashboard_next_page(gui_dashboard_t *dashboard);
 void gui_dashboard_next_view(gui_dashboard_t *dashboard);
+unsigned gui_dashboard_view_count(uint8_t page);
 gui_command_t gui_dashboard_input(gui_dashboard_t *dashboard, gui_input_t input, const gui_model_t *model);
 void gui_dashboard_update(gui_dashboard_t *dashboard, const gui_model_t *model);
 void gui_dashboard_render(gui_dashboard_t *dashboard, gui_canvas_t *canvas, const gui_model_t *model);

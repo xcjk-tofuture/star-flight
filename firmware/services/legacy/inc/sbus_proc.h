@@ -1,6 +1,7 @@
 #ifndef __SBUS_PROC_H__
 #define __SBUS_PROC_H__
 #include <stdint.h>
+#include "rc_ui.h"
 
 #include <stdio.h>
 typedef struct {
@@ -73,6 +74,8 @@ void Remote_Channel_Calibration();
 
 int sbus_transport_init(void);
 void sbus_snapshot(_sbus_ch_cal_struct *out);
+void sbus_ui_snapshot(rc_ui_frame_t *out);
+uint8_t sbus_calibration_result(void); /* 0 idle, 1 saving, 2 verified, 3 failure, 4 cancel */
 void sbus_request_calibration(uint8_t save);
 void sbus_cancel_calibration(void);
 uint8_t sbus_calibration_saving(void);

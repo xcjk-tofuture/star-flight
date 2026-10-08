@@ -10,6 +10,8 @@ typedef struct {
 } gui_menu_t;
 void gui_menu_open(gui_menu_t *menu, const gui_menu_item_t *items, uint8_t count, uint8_t selection);
 void gui_menu_next(gui_menu_t *menu);
+void gui_menu_previous(gui_menu_t *menu);
+void gui_menu_select(gui_menu_t *menu, uint8_t selection);
 void gui_menu_render(gui_menu_t *menu, gui_canvas_t *canvas, const char *title,
                       const char *status, uint32_t now_ms);
 #endif
