@@ -22,7 +22,7 @@ unsigned rc_ui_update(rc_ui_t *u, const rc_ui_frame_t *f, const rc_ui_context_t 
     for (unsigned i=0;i<8;i++) if (f->channels[i]<1000 || f->channels[i]>2000) gate=0;
     if (!gate) { memset(u,0,sizeof(*u)); return 0; }
     if (!u->active) {
-        u->active=1; u->context_id=0xffff;
+        u->active=1; u->context_id=UINT32_MAX;
         u->knob_anchor[0]=f->channels[6]; u->knob_anchor[1]=f->channels[7];
     }
     int centered=f->channels[0]>=1400 && f->channels[0]<=1600 && f->channels[1]>=1400 &&
@@ -33,7 +33,7 @@ unsigned rc_ui_update(rc_ui_t *u, const rc_ui_frame_t *f, const rc_ui_context_t 
         if ((uint32_t)(c->now_ms-u->neutral_ms)<200u) return 0;
         u->ready=1;
     }
-    uint16_t id=(uint16_t)((c->screen<<8)|c->page);
+    uint32_t id=((uint32_t)c->screen<<24)|((uint32_t)c->page<<16)|c->control_context;
     if (id!=u->context_id) {
         u->context_id=id;
         u->knob_anchor[0]=f->channels[6]; u->knob_anchor[1]=f->channels[7];

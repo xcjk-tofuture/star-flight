@@ -10,5 +10,6 @@ void uav_settings_snapshot(uav_settings_snapshot_t *out);
 void uav_settings_set_sound(uint8_t mode);
 int uav_settings_set_value(unsigned field, unsigned value);
 void uav_settings_restore_defaults(void);
+void uav_settings_restore_heater_defaults(void);
 int uav_settings_save(void);
 #endif

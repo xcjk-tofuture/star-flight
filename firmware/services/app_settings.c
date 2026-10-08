@@ -54,6 +54,13 @@ int uav_settings_save(void) {
     saving=current; save_state=UAV_SETTINGS_SAVING;
     return 0;
 }
+void uav_settings_restore_heater_defaults(void) {
+    flight_snapshot_t flight; flight_snapshot_read(&flight);
+    if (flight.state!=0) return;
+    uav_settings_values_t defaults; uav_settings_defaults(&defaults);
+    for (unsigned i=UAV_SETTING_HEATER_ENABLED;i<UAV_SETTING_COUNT;i++)
+        (void)uav_settings_set_value(i,defaults.value[i]);
+}
 void uav_settings_poll(void) {
     if (!save_ticket) return;
     int result=uav_storage_result(save_ticket);

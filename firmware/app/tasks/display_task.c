@@ -69,6 +69,7 @@ static void dispatch_command(gui_command_t command) {
     else if (command==GUI_COMMAND_REMOTE_CANCEL) sbus_cancel_calibration();
     else if (command==GUI_COMMAND_SOUND_NORMAL) uav_settings_set_sound(UAV_SOUND_NORMAL);
     else if (command==GUI_COMMAND_SETTINGS_DEFAULTS) uav_settings_restore_defaults();
+    else if (command==GUI_COMMAND_HEATER_DEFAULTS) uav_settings_restore_heater_defaults();
     else if (command==GUI_COMMAND_SOUND_QUIET) uav_settings_set_sound(UAV_SOUND_QUIET);
     else if (command==GUI_COMMAND_SOUND_MUTED) uav_settings_set_sound(UAV_SOUND_MUTED);
     else if (command==GUI_COMMAND_SETTINGS_SAVE) (void)uav_settings_save();
@@ -88,9 +89,10 @@ static void dispatch_command(gui_command_t command) {
 }
 static void dashboard_event(gui_input_t input) {
     uint8_t screen=dashboard.screen,page=dashboard.page,view=dashboard.view,selection=dashboard.menu.selected;
+    unsigned tuning=gui_tuning_context(&dashboard.tuning);
     gui_command_t command=gui_dashboard_input(&dashboard,input,&model);
     dispatch_command(command);
-    int changed=screen!=dashboard.screen || page!=dashboard.page || view!=dashboard.view || selection!=dashboard.menu.selected;
+    int changed=screen!=dashboard.screen || page!=dashboard.page || view!=dashboard.view || selection!=dashboard.menu.selected || tuning!=gui_tuning_context(&dashboard.tuning);
     int cancel=command==GUI_COMMAND_REMOTE_CANCEL || command==GUI_COMMAND_MAG_CANCEL || command==GUI_COMMAND_ACCEL_CANCEL;
     if (dashboard.screen==GUI_SCREEN_MESSAGE && screen!=GUI_SCREEN_MESSAGE) uav_beeper_request(UAV_BEEP_FAILURE);
     else if (!cancel && (changed || command!=GUI_COMMAND_NONE))
@@ -107,6 +109,9 @@ static void process_navigation(void) {
         if (have) { input_tail=(uint8_t)((input_tail+1)%sizeof(input_events)); input_count--; }
         taskEXIT_CRITICAL();
         if (!have) break;
+        /* Physical K1 hold fine-decrements in a tuning edit; RC BACK still undoes.
+         * K2 hold cancels the edit, or changes sibling pages while browsing. */
+        if (input==GUI_INPUT_BACK && dashboard.screen==GUI_SCREEN_TUNING && dashboard.tuning.editing) input=GUI_INPUT_PREVIOUS;
         dashboard_event((gui_input_t)input);
     }
 }
@@ -116,11 +121,22 @@ static void process_radio(void) {
         .remote_ranges_ready=model.rc_parameters_valid,.saving=(uint8_t)(uav_storage_busy() || model.remote_saving),
         .screen=dashboard.screen,.page=dashboard.page,
         .remote_capture_view=(uint8_t)(dashboard.screen==GUI_SCREEN_PAGE && dashboard.page==GUI_PAGE_REMOTE_CAL)};
-    if (dashboard.screen==GUI_SCREEN_ROOT || dashboard.screen==GUI_SCREEN_CALIBRATION || dashboard.screen==GUI_SCREEN_CONFIRM ||
+    if (dashboard.screen==GUI_SCREEN_TUNING) {
+        context.control_context=(uint16_t)gui_tuning_context(&dashboard.tuning);
+        if (dashboard.tuning.editing) {
+            unsigned field=gui_tuning_field(&dashboard.tuning),step=uav_settings_step(field),minimum=uav_settings_min(field);
+            context.view_count=(uint8_t)((uav_settings_max(field)-minimum)/step+1);
+            context.view_index=(uint8_t)((model.settings_value[field]-minimum)/step);
+        } else {
+            context.select_count=4; context.select_index=dashboard.tuning.selected;
+            context.view_count=dashboard.tuning.module->page_count; context.view_index=dashboard.tuning.page;
+        }
+    } else if (dashboard.screen==GUI_SCREEN_ROOT || dashboard.screen==GUI_SCREEN_CALIBRATION || dashboard.screen==GUI_SCREEN_CONFIRM ||
         dashboard.screen==GUI_SCREEN_SETTINGS || dashboard.screen==GUI_SCREEN_SOUND ||
         dashboard.screen==GUI_SCREEN_PARAMETERS || dashboard.screen==GUI_SCREEN_EDIT) {
         context.select_count=dashboard.menu.count; context.select_index=dashboard.menu.selected;
         if (dashboard.screen==GUI_SCREEN_EDIT) {
+            context.control_context=dashboard.edit_field;
             unsigned field=dashboard.edit_field,step=uav_settings_step(field),minimum=uav_settings_min(field);
             context.view_count=(uint8_t)((uav_settings_max(field)-minimum)/step+1);
             context.view_index=(uint8_t)((model.settings_value[field]-minimum)/step);
@@ -138,7 +154,10 @@ static void process_radio(void) {
         rc_ui_action_t action=actions[i];
         if (action.kind==RC_UI_SELECT) {
             if (dashboard.screen!=context.screen || dashboard.page!=context.page) continue;
-            if (dashboard.screen==GUI_SCREEN_ROOT || dashboard.screen==GUI_SCREEN_CALIBRATION || dashboard.screen==GUI_SCREEN_CONFIRM ||
+            if (dashboard.screen==GUI_SCREEN_TUNING) {
+                if (gui_tuning_context(&dashboard.tuning)!=context.control_context) continue;
+                gui_tuning_select(&dashboard.tuning,action.value);
+            } else if (dashboard.screen==GUI_SCREEN_ROOT || dashboard.screen==GUI_SCREEN_CALIBRATION || dashboard.screen==GUI_SCREEN_CONFIRM ||
                 dashboard.screen==GUI_SCREEN_SETTINGS || dashboard.screen==GUI_SCREEN_SOUND ||
                 dashboard.screen==GUI_SCREEN_PARAMETERS || dashboard.screen==GUI_SCREEN_EDIT)
                 gui_menu_select(&dashboard.menu,action.value);
@@ -148,7 +167,14 @@ static void process_radio(void) {
             uav_beeper_request(UAV_BEEP_CLICK);
         } else if (action.kind==RC_UI_VIEW) {
             if (dashboard.screen!=context.screen || dashboard.page!=context.page) continue;
-            if (dashboard.screen==GUI_SCREEN_EDIT) {
+            if (dashboard.screen==GUI_SCREEN_TUNING) {
+                if (gui_tuning_context(&dashboard.tuning)!=context.control_context) continue;
+                if (dashboard.tuning.editing) {
+                    unsigned field=gui_tuning_field(&dashboard.tuning);
+                    unsigned value=uav_settings_min(field)+action.value*uav_settings_step(field);
+                    if (uav_settings_set_value(field,value)!=0) uav_beeper_request(UAV_BEEP_FAILURE);
+                } else gui_tuning_page(&dashboard.tuning,action.value);
+            } else if (dashboard.screen==GUI_SCREEN_EDIT) {
                 unsigned field=dashboard.edit_field;
                 unsigned value=uav_settings_min(field)+action.value*uav_settings_step(field);
                 if (uav_settings_set_value(field,value)!=0) uav_beeper_request(UAV_BEEP_FAILURE);
