@@ -17,6 +17,8 @@
 #include "rc_ui.h"
 #include "beeper.h"
 #include "flash_proc.h"
+#include "app_settings.h"
+#include "imu_heater.h"
 #include <string.h>
 osThreadId OLEDTaskHandle;
 extern uint8_t Bmi088Init_Flag, AK8975Flag, SPL06Flag;
@@ -65,6 +67,24 @@ static void dispatch_command(gui_command_t command) {
     else if (command==GUI_COMMAND_ACCEL_START) sensors_request_accel_calibration();
     else if (command==GUI_COMMAND_ACCEL_CANCEL) sensors_cancel_accel_calibration();
     else if (command==GUI_COMMAND_REMOTE_CANCEL) sbus_cancel_calibration();
+    else if (command==GUI_COMMAND_SOUND_NORMAL) uav_settings_set_sound(UAV_SOUND_NORMAL);
+    else if (command==GUI_COMMAND_SETTINGS_DEFAULTS) uav_settings_restore_defaults();
+    else if (command==GUI_COMMAND_SOUND_QUIET) uav_settings_set_sound(UAV_SOUND_QUIET);
+    else if (command==GUI_COMMAND_SOUND_MUTED) uav_settings_set_sound(UAV_SOUND_MUTED);
+    else if (command==GUI_COMMAND_SETTINGS_SAVE) (void)uav_settings_save();
+    else if (command==GUI_COMMAND_HEATER_TOGGLE) {
+        uav_settings_snapshot_t s; uav_settings_snapshot(&s);
+        (void)uav_settings_set_value(UAV_SETTING_HEATER_ENABLED,!s.values.value[UAV_SETTING_HEATER_ENABLED]);
+    } else if (command==GUI_COMMAND_SETTING_INCREASE || command==GUI_COMMAND_SETTING_DECREASE || command==GUI_COMMAND_SETTING_CANCEL) {
+        unsigned field=dashboard.edit_field;
+        uav_settings_snapshot_t s; uav_settings_snapshot(&s);
+        int value=s.values.value[field],step=(int)uav_settings_step(field);
+        if (command==GUI_COMMAND_SETTING_CANCEL) value=dashboard.edit_original;
+        else value+=command==GUI_COMMAND_SETTING_INCREASE ? step:-step;
+        if (value<(int)uav_settings_min(field)) value=(int)uav_settings_min(field);
+        if (value>(int)uav_settings_max(field)) value=(int)uav_settings_max(field);
+        if (uav_settings_set_value(field,(unsigned)value)!=0) uav_beeper_request(UAV_BEEP_FAILURE);
+    }
 }
 static void dashboard_event(gui_input_t input) {
     uint8_t screen=dashboard.screen,page=dashboard.page,view=dashboard.view,selection=dashboard.menu.selected;
@@ -96,8 +116,15 @@ static void process_radio(void) {
         .remote_ranges_ready=model.rc_parameters_valid,.saving=(uint8_t)(uav_storage_busy() || model.remote_saving),
         .screen=dashboard.screen,.page=dashboard.page,
         .remote_capture_view=(uint8_t)(dashboard.screen==GUI_SCREEN_PAGE && dashboard.page==GUI_PAGE_REMOTE_CAL)};
-    if (dashboard.screen==GUI_SCREEN_ROOT || dashboard.screen==GUI_SCREEN_CALIBRATION || dashboard.screen==GUI_SCREEN_CONFIRM) {
+    if (dashboard.screen==GUI_SCREEN_ROOT || dashboard.screen==GUI_SCREEN_CALIBRATION || dashboard.screen==GUI_SCREEN_CONFIRM ||
+        dashboard.screen==GUI_SCREEN_SETTINGS || dashboard.screen==GUI_SCREEN_SOUND ||
+        dashboard.screen==GUI_SCREEN_PARAMETERS || dashboard.screen==GUI_SCREEN_EDIT) {
         context.select_count=dashboard.menu.count; context.select_index=dashboard.menu.selected;
+        if (dashboard.screen==GUI_SCREEN_EDIT) {
+            unsigned field=dashboard.edit_field,step=uav_settings_step(field),minimum=uav_settings_min(field);
+            context.view_count=(uint8_t)((uav_settings_max(field)-minimum)/step+1);
+            context.view_index=(uint8_t)((model.settings_value[field]-minimum)/step);
+        }
     } else if (dashboard.screen==GUI_SCREEN_HELP) {
         context.select_count=2; context.select_index=dashboard.help_page;
     } else if (dashboard.screen==GUI_SCREEN_PAGE) {
@@ -111,7 +138,9 @@ static void process_radio(void) {
         rc_ui_action_t action=actions[i];
         if (action.kind==RC_UI_SELECT) {
             if (dashboard.screen!=context.screen || dashboard.page!=context.page) continue;
-            if (dashboard.screen==GUI_SCREEN_ROOT || dashboard.screen==GUI_SCREEN_CALIBRATION || dashboard.screen==GUI_SCREEN_CONFIRM)
+            if (dashboard.screen==GUI_SCREEN_ROOT || dashboard.screen==GUI_SCREEN_CALIBRATION || dashboard.screen==GUI_SCREEN_CONFIRM ||
+                dashboard.screen==GUI_SCREEN_SETTINGS || dashboard.screen==GUI_SCREEN_SOUND ||
+                dashboard.screen==GUI_SCREEN_PARAMETERS || dashboard.screen==GUI_SCREEN_EDIT)
                 gui_menu_select(&dashboard.menu,action.value);
             else if (dashboard.screen==GUI_SCREEN_HELP) dashboard.help_page=action.value%2;
             else if (dashboard.screen==GUI_SCREEN_PAGE && dashboard.page<=GUI_PAGE_COUNT)
@@ -119,6 +148,11 @@ static void process_radio(void) {
             uav_beeper_request(UAV_BEEP_CLICK);
         } else if (action.kind==RC_UI_VIEW) {
             if (dashboard.screen!=context.screen || dashboard.page!=context.page) continue;
+            if (dashboard.screen==GUI_SCREEN_EDIT) {
+                unsigned field=dashboard.edit_field;
+                unsigned value=uav_settings_min(field)+action.value*uav_settings_step(field);
+                if (uav_settings_set_value(field,value)!=0) uav_beeper_request(UAV_BEEP_FAILURE);
+            }
             if (dashboard.screen==GUI_SCREEN_PAGE && action.value<gui_dashboard_view_count(dashboard.page)) dashboard.view=action.value;
             uav_beeper_request(UAV_BEEP_CLICK);
         } else if (action.kind==RC_UI_SAVE_DIALOG) {
@@ -131,9 +165,14 @@ static void process_radio(void) {
     }
 }
 static void sound_status(void) {
-    static uint8_t initialized,gyro,gyro_failed,mag,mag_phase,acc,acc_phase,faces,remote,remote_result,link;
+    static uint8_t initialized,gyro,gyro_failed,mag,mag_phase,acc,acc_phase,faces,remote,remote_result,link,settings_state,heater_fault;
     static uint32_t link_change_ms;
     if (initialized) {
+        if (model.heater_fault && model.heater_fault!=heater_fault) uav_beeper_request(UAV_BEEP_FAILURE);
+        if (model.settings_save_state!=settings_state) {
+            if (model.settings_save_state==UAV_SETTINGS_SAVED) uav_beeper_request(UAV_BEEP_DONE);
+            else if (model.settings_save_state==UAV_SETTINGS_FAILED) uav_beeper_request(UAV_BEEP_FAILURE);
+        }
         if ((model.mag_calibrating && !mag) || (model.accel_calibrating && !acc) || (model.remote_calibrating && !remote))
             uav_beeper_request(UAV_BEEP_START);
         if (!model.imu_calibrating && gyro && !model.accel_calibrating && !acc)
@@ -166,6 +205,18 @@ static void sound_status(void) {
     gyro=model.imu_calibrating; gyro_failed=model.imu_cal_failed; mag=model.mag_calibrating;
     mag_phase=model.mag_calibration_step; acc=model.accel_calibrating; acc_phase=model.accel_cal_phase;
     faces=model.accel_cal_faces; remote=model.remote_calibrating; remote_result=model.remote_result;
+    settings_state=model.settings_save_state;
+    heater_fault=model.heater_fault;
+}
+static void read_settings_model(void) {
+    uav_settings_snapshot_t settings; uav_settings_snapshot(&settings);
+    model.sound_mode=(uint8_t)settings.values.value[UAV_SETTING_SOUND]; model.settings_dirty=settings.dirty; model.settings_save_state=settings.save_state;
+    memcpy(model.settings_value,settings.values.value,sizeof(model.settings_value));
+    uav_heater_stats_t heater; uav_imu_heater_stats(&heater);
+    model.heater_temperature=heater.temperature; model.heater_target=heater.target; model.heater_duty=heater.duty_percent;
+    model.heater_p=heater.p; model.heater_i=heater.i; model.heater_d=heater.d;
+    model.heater_state=heater.state; model.heater_fault=heater.fault;
+    model.heater_temperature_valid=heater.temperature_valid;
 }
 static void read_model(void) {
     flight_snapshot_t flight;
@@ -237,10 +288,13 @@ static void read_model(void) {
     model.heap_free = xPortGetFreeHeapSize(); model.heap_min = xPortGetMinimumEverFreeHeapSize();
     model.log_dropped = uav_log_dropped(); model.uart_errors = uart.start_errors + uart.timeouts + uart.dma_errors;
     model.display_stats = presenter.stats;
+    read_settings_model();
 }
 void OLED_Task_Proc(void const *argument) {
     (void)argument;
     gui_canvas_init(&canvas); gui_dashboard_init(&dashboard);
+    uav_settings_snapshot_t initial_settings; uav_settings_snapshot(&initial_settings);
+    gui_dashboard_set_page(&dashboard,(uint8_t)initial_settings.values.value[UAV_SETTING_BOOT_PAGE]);
     gui_presenter_init(&presenter, gui_display_port_write, NULL);
     uint8_t configured = gui_display_port_init() == 0, panel_enabled = 0;
     uint32_t last_init_attempt = platform_millis(), last_repaint = platform_millis();
@@ -258,7 +312,7 @@ void OLED_Task_Proc(void const *argument) {
             gui_presenter_invalidate(&presenter);
             if (!configured) presenter.stats.errors++;
         }
-        read_model(); sound_status(); process_navigation(); process_radio();
+        uav_settings_poll(); read_model(); sound_status(); process_navigation(); read_settings_model(); process_radio(); read_settings_model();
         if (model.remote_calibrating) remote_cal_was_active=1;
         else if (remote_cal_was_active) {
             if (dashboard.page==GUI_PAGE_REMOTE_CAL) gui_dashboard_set_page(&dashboard,GUI_PAGE_OVERVIEW);

@@ -1,6 +1,8 @@
 /* Render the firmware's actual portable UI into PBM files using simulated data.
  * This is a presentation/export tool, not a hardware diagnostic. */
 #include "gui_dashboard.h"
+#include "settings_record.h"
+#include "imu_heater.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,6 +36,10 @@ static void sample(unsigned tick) {
 int main(int argc, char **argv) {
     if (argc != 2) { fprintf(stderr, "Usage: gui-preview OUTPUT_DIRECTORY\n"); return 1; }
     gui_canvas_init(&canvas); gui_dashboard_init(&dashboard);
+    uav_settings_values_t settings; uav_settings_defaults(&settings);
+    memcpy(model.settings_value,settings.value,sizeof(model.settings_value));
+    model.heater_temperature_valid=1; model.heater_temperature=39.8f; model.heater_target=40;
+    model.heater_duty=24; model.heater_p=2; model.heater_i=22; model.heater_state=UAV_HEATER_READY;
     model.attitude_valid = model.imu_ok = model.mag_ok = model.baro_ok = model.rc_connected = model.rc_raw_connected = 1;
     model.flow_valid = model.flash_ok = 1; model.flow_quality = 210; model.flow_height_mm = 1250;
     model.fusion_mag_used = 1;
@@ -43,6 +49,7 @@ int main(int argc, char **argv) {
         model.remote_min[i] = 300; model.remote_max[i] = 1700; model.mag_scale[i%3] = 1;
     }
     for (unsigned i = 0; i < 90; i++) { sample(i); gui_dashboard_update(&dashboard, &model); }
+    gui_dashboard_input(&dashboard,GUI_INPUT_BACK,&model);
     gui_dashboard_render(&dashboard, &canvas, &model);
     if (save_frame(argv[1], "menu-main")) return 1;
     gui_dashboard_input(&dashboard, GUI_INPUT_NEXT, &model);
@@ -64,6 +71,8 @@ int main(int argc, char **argv) {
     gui_dashboard_input(&dashboard, GUI_INPUT_BACK, &model);
     gui_dashboard_input(&dashboard, GUI_INPUT_BACK, &model);
     gui_dashboard_input(&dashboard, GUI_INPUT_NEXT, &model);
+    gui_dashboard_input(&dashboard, GUI_INPUT_NEXT, &model);
+    gui_dashboard_input(&dashboard, GUI_INPUT_NEXT, &model);
     gui_dashboard_input(&dashboard, GUI_INPUT_ENTER, &model);
     gui_dashboard_render(&dashboard, &canvas, &model);
     if (save_frame(argv[1], "menu-help")) return 1;
@@ -76,7 +85,7 @@ int main(int argc, char **argv) {
         {"sensors",4,0},{"offsets",4,1},{"environment",4,2},{"remote",5,0},{"remote-5-8",5,1},
         {"remote-raw",5,2},{"remote-raw-5-8",5,3},
         {"flow",6,0},{"flow-chart",6,1},{"health",7,0},{"memory",7,1},{"display-stats",7,2},
-        {"remote-cal",19,0},{"mag-cal",20,0}
+        {"remote-cal",19,0},{"mag-cal",20,0},{"heater-monitor",22,0}
     };
     for (unsigned i = 0; i < sizeof(scenes)/sizeof(scenes[0]); i++) {
         model.remote_calibrating = scenes[i].page == GUI_PAGE_REMOTE_CAL;
@@ -86,6 +95,18 @@ int main(int argc, char **argv) {
         if (save_frame(argv[1], scenes[i].name)) return 1;
     }
     model.remote_calibrating = model.mag_calibrating = 0;
+    gui_dashboard_set_page(&dashboard,1); gui_dashboard_input(&dashboard,GUI_INPUT_BACK,&model);
+    gui_menu_select(&dashboard.menu,8); gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
+    gui_dashboard_render(&dashboard,&canvas,&model); if (save_frame(argv[1],"menu-settings")) return 1;
+    gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model); gui_dashboard_render(&dashboard,&canvas,&model);
+    if (save_frame(argv[1],"menu-sound")) return 1;
+    gui_dashboard_input(&dashboard,GUI_INPUT_BACK,&model); gui_dashboard_input(&dashboard,GUI_INPUT_BACK,&model);
+    gui_menu_select(&dashboard.menu,9); gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
+    gui_dashboard_render(&dashboard,&canvas,&model); if (save_frame(argv[1],"menu-parameters")) return 1;
+    gui_menu_select(&dashboard.menu,1); gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
+    model.rc_ui_active=model.rc_ui_ready=1;
+    gui_dashboard_render(&dashboard,&canvas,&model); if (save_frame(argv[1],"parameter-target")) return 1;
+    model.rc_ui_active=model.rc_ui_ready=0;
     model.imu_cal_failed=1; model.attitude_valid=0;
     gui_dashboard_set_page(&dashboard,2); gui_dashboard_render(&dashboard,&canvas,&model);
     if (save_frame(argv[1],"attitude-cal-failed")) return 1;

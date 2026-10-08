@@ -36,7 +36,7 @@ void gui_menu_render(gui_menu_t *m, gui_canvas_t *c, const char *title,
         if (width <= 48) gui_text(c, 106-width, 0, status, GUI_FONT_CN12);
     }
     char count[12]; snprintf(count, sizeof(count), "%u/%u", m->selected+1u, m->count);
-    gui_text(c, 114, 4, count, GUI_FONT_TINY);
+    gui_text(c, GUI_WIDTH-gui_text_width(c,count,GUI_FONT_TINY)-1, 4, count, GUI_FONT_TINY);
     gui_line(c, 0, 14, 127, 14);
     int target = (MENU_FIRST_Y + (m->selected % MENU_VISIBLE_ROWS)*MENU_ROW_PITCH)*256;
     uint32_t dt = m->animation_ms ? (uint32_t)(now-m->animation_ms) : 100;
