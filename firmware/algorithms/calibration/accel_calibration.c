@@ -1,0 +1,115 @@
+#include "accel_calibration.h"
+#include <math.h>
+#include <string.h>
+static const unsigned axes[6]={2,2,0,0,1,1};
+static void window_reset(uav_accel_calibrator_t *c) {
+    c->count=0; c->stable=0; c->noise_latched=0;
+    memset(c->mean,0,sizeof(c->mean)); memset(c->m2,0,sizeof(c->m2));
+    memset(c->raw_mean,0,sizeof(c->raw_mean)); memset(c->raw_m2,0,sizeof(c->raw_m2));
+}
+void uav_accel_calibrator_init(uav_accel_calibrator_t *c) {
+    memset(c,0,sizeof(*c)); c->detected=255; c->reason=UAV_ACCEL_REASON_CONFIRM;
+}
+void uav_accel_calibrator_confirm(uav_accel_calibrator_t *c) {
+    if (c->phase!=UAV_ACCEL_PLACE) return;
+    window_reset(c); c->phase=UAV_ACCEL_SETTLE; c->reason=UAV_ACCEL_REASON_ORIENTATION;
+}
+void uav_accel_calibrator_discard_window(uav_accel_calibrator_t *c) {
+    if (c->phase>UAV_ACCEL_SAMPLE) return;
+    window_reset(c); c->have_time=0;
+    if (c->phase==UAV_ACCEL_SAMPLE) c->phase=UAV_ACCEL_SETTLE;
+    c->reason=UAV_ACCEL_REASON_TIMING;
+}
+static unsigned detect(const float a[3]) {
+    unsigned axis=0;
+    for (unsigned i=1;i<3;i++) if (fabsf(a[i])>fabsf(a[axis])) axis=i;
+    for (unsigned i=0;i<3;i++) if (i!=axis && fabsf(a[i])>1.25f) return 255;
+    if (fabsf(a[axis])<7.5f || fabsf(a[axis])>12.5f) return 255;
+    return (axis==2 ? 0u:axis==0 ? 2u:4u)+(a[axis]<0);
+}
+int uav_accel_calibrator_feed(uav_accel_calibrator_t *c, const float raw[3],
+                             const float a[3], const float g[3], uint32_t ms) {
+    if (c->phase>=UAV_ACCEL_FIT) return c->mask==63;
+    int motion=0;
+    float norm=0,gyro_norm=0;
+    for (unsigned i=0;i<3;i++) {
+        if (!isfinite(raw[i]) || !isfinite(a[i]) || !isfinite(g[i]) || fabsf(raw[i])>30) {
+            motion=1; break;
+        }
+        norm+=raw[i]*raw[i]; gyro_norm+=g[i]*g[i];
+        if (fabsf(raw[i]-a[i])>1.5f) motion=1;
+    }
+    if (!isfinite(norm) || norm<6.8f*6.8f || norm>13.0f*13.0f || gyro_norm>.08f*.08f) motion=1;
+    c->detected=motion ? 255:(uint8_t)detect(a);
+    if (c->have_time && (uint32_t)(ms-c->last_ms)<10u) return 0;
+    int gap=c->have_time && (uint32_t)(ms-c->last_ms)>30u;
+    c->last_ms=ms; c->have_time=1;
+    if (c->phase==UAV_ACCEL_PLACE) return 0;
+    if (motion || gap || c->detected!=c->target) {
+        window_reset(c); c->phase=UAV_ACCEL_SETTLE;
+        c->reason=gap ? UAV_ACCEL_REASON_TIMING:motion ? UAV_ACCEL_REASON_MOTION:UAV_ACCEL_REASON_ORIENTATION;
+        return 0;
+    }
+    if (c->noise_latched && (uint32_t)(ms-c->noisy_ms)<700u) {
+        c->reason=UAV_ACCEL_REASON_NOISE; return 0;
+    }
+    c->noise_latched=0;
+    if (!c->stable) { c->stable=1; c->stable_ms=ms; }
+    if ((uint32_t)(ms-c->stable_ms)<800u) { c->reason=UAV_ACCEL_REASON_OK; return 0; }
+    c->phase=UAV_ACCEL_SAMPLE; c->reason=UAV_ACCEL_REASON_OK; c->count++;
+    for (unsigned i=0;i<3;i++) {
+        float delta=a[i]-c->mean[i]; c->mean[i]+=delta/c->count;
+        c->m2[i]+=delta*(a[i]-c->mean[i]);
+        delta=raw[i]-c->raw_mean[i]; c->raw_mean[i]+=delta/c->count;
+        c->raw_m2[i]+=delta*(raw[i]-c->raw_mean[i]);
+    }
+    if (c->count<UAV_ACCEL_CAL_SAMPLES) return 0;
+    for (unsigned i=0;i<3;i++) {
+        if (c->m2[i]/(c->count-1)>.12f*.12f || c->raw_m2[i]/(c->count-1)>.30f*.30f) {
+            window_reset(c); c->phase=UAV_ACCEL_SETTLE; c->reason=UAV_ACCEL_REASON_NOISE;
+            c->noise_latched=1; c->noisy_ms=ms; return 0;
+        }
+    }
+    memcpy(c->faces[c->target],c->mean,sizeof(c->mean)); c->mask|=(uint8_t)(1u<<c->target);
+    if (c->mask==63) { c->phase=UAV_ACCEL_FIT; return 1; }
+    c->target=0; while (c->mask & (1u<<c->target)) c->target++;
+    window_reset(c); c->phase=UAV_ACCEL_PLACE; c->reason=UAV_ACCEL_REASON_CONFIRM;
+    return 0;
+}
+int uav_accel_calibration_valid(const uav_accel_calibration_t *c) {
+    if (!c || c->faces!=63 || c->samples!=6*UAV_ACCEL_CAL_SAMPLES ||
+        !isfinite(c->gravity_m_s2) || fabsf(c->gravity_m_s2-UAV_ACCEL_CAL_GRAVITY)>.01f ||
+        !isfinite(c->rms_fraction) || c->rms_fraction<0 || c->rms_fraction>.02f) return 0;
+    for (unsigned i=0;i<3;i++)
+        if (!isfinite(c->bias[i]) || fabsf(c->bias[i])>1.0f || !isfinite(c->scale[i]) ||
+            c->scale[i]<.7f || c->scale[i]>1.3f) return 0;
+    return 1;
+}
+int uav_accel_calibrator_fit(uav_accel_calibrator_t *c, uav_accel_calibration_t *out) {
+    if (c->mask!=63) return UAV_ACCEL_REASON_FIT;
+    uav_accel_calibration_t result={.gravity_m_s2=UAV_ACCEL_CAL_GRAVITY,.faces=63,.samples=6*UAV_ACCEL_CAL_SAMPLES};
+    for (unsigned pair=0;pair<3;pair++) {
+        unsigned face=2*pair,axis=axes[face];
+        float positive=c->faces[face][axis],negative=c->faces[face+1][axis],span=positive-negative;
+        if (!isfinite(span) || span<14 || span>28) return UAV_ACCEL_REASON_FIT;
+        result.bias[axis]=.5f*(positive+negative); result.scale[axis]=2*UAV_ACCEL_CAL_GRAVITY/span;
+    }
+    float squared=0,worst=0; unsigned worst_face=0;
+    for (unsigned face=0;face<6;face++) {
+        float norm=0,error2=0;
+        for (unsigned axis=0;axis<3;axis++) {
+            float corrected=(c->faces[face][axis]-result.bias[axis])*result.scale[axis];
+            float expected=axis==axes[face] ? (face&1u ? -UAV_ACCEL_CAL_GRAVITY:UAV_ACCEL_CAL_GRAVITY):0;
+            float error=corrected-expected; norm+=corrected*corrected; error2+=error*error;
+        }
+        float residual=sqrtf(norm)/UAV_ACCEL_CAL_GRAVITY-1; squared+=residual*residual;
+        if (error2>worst) { worst=error2; worst_face=face; }
+    }
+    result.rms_fraction=sqrtf(squared/6); *out=result;
+    if (worst>.04f*.04f*UAV_ACCEL_CAL_GRAVITY*UAV_ACCEL_CAL_GRAVITY) {
+        c->mask&=(uint8_t)~(1u<<worst_face); c->target=(uint8_t)worst_face;
+        window_reset(c); c->phase=UAV_ACCEL_PLACE; c->reason=UAV_ACCEL_REASON_FIT;
+        return UAV_ACCEL_REASON_FIT;
+    }
+    return uav_accel_calibration_valid(&result) ? UAV_ACCEL_REASON_OK:UAV_ACCEL_REASON_FIT;
+}
