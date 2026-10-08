@@ -3,6 +3,7 @@
 #include "key_proc.h"
 
 #include "platform_time.h"
+#include "beeper.h"
 
 u8 keyUp, keyDown, keyOld, keyValue;
 
@@ -38,6 +39,7 @@ void Key_Task_Proc(void const *argument) {
             uav_display_input(UAV_DISPLAY_CAL_MENU); key2_long_emitted=1;
         }
         osDelay(5);
+        uav_beeper_tick(platform_millis());
     }
 }
 
