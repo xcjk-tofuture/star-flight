@@ -2,6 +2,7 @@
 #include "internal_flash_port.h"
 #include "calibration_record.h"
 #include "mag_record.h"
+#include "accel_record.h"
 #include "star_protocol.h"
 #include "flight_snapshot.h"
 #include "uav_actuator.h"
@@ -19,6 +20,10 @@ typedef struct { uint8_t kind, length; uint32_t ticket; uint8_t bytes[NV_PAYLOAD
 typedef struct { uint32_t ticket; int status; } storage_completion_t;
 static storage_completion_t completed[8];
 static unsigned completion_index;
+static void update_sequence(unsigned kind, uint32_t seq) {
+    unsigned index=kind==UAV_PARAM_REMOTE ? 1u:kind==UAV_PARAM_PID ? 2u:0u;
+    if (!storage_sequence[index] || (int32_t)(seq-storage_sequence[index])>0) storage_sequence[index]=seq;
+}
 osThreadId FlashTaskHandle;
 uint8_t uav_storage_busy(void) { return pending_writes != 0; }
 uint8_t uav_storage_ready(void) { return store.ready; }
@@ -57,13 +62,14 @@ static int load(unsigned kind, uint8_t *bytes, size_t length) {
     storage_unlock();
     if (ok) {
         taskENTER_CRITICAL();
-        storage_sequence[kind==UAV_PARAM_MAG ? 0:kind-1]=seq;
+        update_sequence(kind,seq);
         taskEXIT_CRITICAL();
     }
     return ok;
 }
 void UAV_Read_Param_IMU(_imuData_all *d) {
     uint8_t b[72];
+    d->accoffsetbias=(Vector3f_t){0,0,0}; d->accscalebias=(Vector3f_t){1,1,1};
     d->magoffsetbias=(Vector3f_t){0,0,0}; d->magscalebias=(Vector3f_t){1,1,1};
     memset(d->magmatrix,0,sizeof(d->magmatrix));
     if (load(UAV_PARAM_IMU_LEGACY,b,72)) {
@@ -86,7 +92,18 @@ void UAV_Read_Param_IMU(_imuData_all *d) {
                          (long)(c.matrix[3*i+2]*1000),(long)(c.bias[i]*1000));
         }
     } else uav_logf("WARN","MAG_CAL","no ellipsoid record; using legacy diagonal/identity; manual calibration recommended");
-    /* Gyro startup calibration owns its bias. Accel six-face calibration is pending. */
+    if (load(UAV_PARAM_ACCEL,b,UAV_PARAM_ACCEL_BYTES)) {
+        uav_accel_calibration_t c;
+        if (uav_accel_record_decode(b,&c)) {
+            d->accoffsetbias=(Vector3f_t){c.bias[0],c.bias[1],c.bias[2]};
+            d->accscalebias=(Vector3f_t){c.scale[0],c.scale[1],c.scale[2]};
+            uav_logf("INFO","ACC_CAL","loaded faces=6 samples=%lu rms_permille=%lu bias_milli_mps2=%ld,%ld,%ld scale_milli=%ld,%ld,%ld",
+                     (unsigned long)c.samples,(unsigned long)(c.rms_fraction*1000),
+                     (long)(c.bias[0]*1000),(long)(c.bias[1]*1000),(long)(c.bias[2]*1000),
+                     (long)(c.scale[0]*1000),(long)(c.scale[1]*1000),(long)(c.scale[2]*1000));
+        }
+    } else uav_logf("WARN","ACC_CAL","no six-face record; using identity correction");
+    /* Gyro startup calibration still owns its bias; old IMU fields are not imported. */
 }
 void UAV_Read_Param_Remote(_sbus_ch_struct *d) {
     uint8_t b[32]={0}; (void)load(UAV_PARAM_REMOTE,b,sizeof(b));
@@ -132,6 +149,10 @@ int UAV_Write_Param_Mag(const uav_mag_calibration_t *c, uint32_t *ticket) {
     storage_request_t r={.kind=UAV_PARAM_MAG,.length=UAV_PARAM_MAG_BYTES};
     uav_mag_record_encode(r.bytes,c); return enqueue(&r,ticket);
 }
+int UAV_Write_Param_Accel(const uav_accel_calibration_t *c, uint32_t *ticket) {
+    storage_request_t r={.kind=UAV_PARAM_ACCEL,.length=UAV_PARAM_ACCEL_BYTES};
+    uav_accel_record_encode(r.bytes,c); return enqueue(&r,ticket);
+}
 int UAV_Write_Param_Remote_Ticket(_sbus_ch_struct d, uint32_t *ticket) {
     storage_request_t r={.kind=UAV_PARAM_REMOTE,.length=32};
 #define PUT_CHANNEL(i) \
@@ -164,7 +185,7 @@ void Flash_Task_Proc(void const *arg) {
         }
         storage_unlock();
         taskENTER_CRITICAL();
-        if (status==NV_OK) storage_sequence[r.kind==UAV_PARAM_MAG ? 0:r.kind-1]=sequence;
+        if (status==NV_OK) update_sequence(r.kind,sequence);
         else rejected_writes++;
         completed[completion_index]=(storage_completion_t){r.ticket,status==NV_OK ? 1:-1};
         completion_index=(completion_index+1u)%8u; completed_ticket=r.ticket; pending_writes--;
