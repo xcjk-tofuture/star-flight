@@ -109,7 +109,6 @@ void SensorData_Task_Proc(void const *argument);
 
 void IMU_Temperature_Control_Init(); // IMU恒温控制初始化
 
-void IMU_Temperature_Control(float target); // IMU恒温控制  输入温度
 
 float invSqrt(float x);
 float DATA_Trans(u8 Data_1, u8 Data_2, u8 Data_3, u8 Data_4);

@@ -90,6 +90,7 @@ set(FIRMWARE_SOURCES
   firmware/algorithms/attitude/fusion.c
   firmware/services/imu_pipeline.c
   firmware/services/app_settings.c
+  firmware/services/imu_heater.c
   firmware/services/rc_ui.c
   firmware/services/beeper.c
   firmware/platform/stm32/beeper_port.c

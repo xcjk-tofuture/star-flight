@@ -4,6 +4,7 @@
 
 #include "platform_time.h"
 #include "beeper.h"
+#include "imu_heater.h"
 
 u8 keyUp, keyDown, keyOld, keyValue;
 
@@ -40,6 +41,7 @@ void Key_Task_Proc(void const *argument) {
         }
         osDelay(5);
         uav_beeper_tick(platform_millis());
+        uav_imu_heater_watchdog(platform_millis());
     }
 }
 

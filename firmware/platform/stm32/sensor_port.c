@@ -108,6 +108,22 @@ int uav_sensor_read_imu(float acc[3], float gyro[3]) {
     if (status!=HAL_OK) return -1;
     return uav_imu_decode_bmi088(acc_rx,gyro_rx,acc,gyro);
 }
+int uav_sensor_read_temperature(float *temperature) {
+    if (!temperature) return -1;
+    uint8_t id_tx[3]={0x80},id_rx[3],tx[4]={0xa2},rx[4];
+    uav_sensor_select(0,1);
+    HAL_StatusTypeDef status=HAL_SPI_TransmitReceive(&hspi2,id_tx,id_rx,sizeof(id_rx),2);
+    uav_sensor_select(0,0);
+    if (status!=HAL_OK || id_rx[2]!=0x1e) return -1;
+    uav_sensor_select(0,1);
+    status=HAL_SPI_TransmitReceive(&hspi2,tx,rx,sizeof(rx),2);
+    uav_sensor_select(0,0);
+    if (status!=HAL_OK) return -1;
+    int raw=(rx[2]<<3)|(rx[3]>>5);
+    if (raw>1023) raw-=2048;
+    *temperature=raw*.125f+23.0f;
+    return *temperature>=-40 && *temperature<=85 ? 0:-1;
+}
 static int magnetic_transaction(uint8_t *tx, uint8_t *rx, uint16_t count) {
     uav_sensor_select(2,1);
     HAL_StatusTypeDef status=HAL_SPI_TransmitReceive(&hspi2,tx,rx,count,2);
@@ -159,13 +175,17 @@ void uav_device_led_write(uint8_t bits) {
     HAL_GPIO_WritePin(UAV_LED_PORT, RGB_B_Pin, (bits & 1) ? GPIO_PIN_RESET : GPIO_PIN_SET);
 }
 void uav_device_heater_init(void) {
+    __HAL_TIM_SET_COMPARE(&UAV_HEATER_TIMER, TIM_CHANNEL_1, 0);
+    uint32_t clock=HAL_RCC_GetPCLK2Freq();
+    if (clock!=HAL_RCC_GetHCLKFreq()) clock*=2;
+    __HAL_TIM_SET_PRESCALER(&UAV_HEATER_TIMER,clock/1000000u-1);
+    __HAL_TIM_SET_AUTORELOAD(&UAV_HEATER_TIMER,999);
+    UAV_HEATER_TIMER.Instance->EGR=TIM_EGR_UG;
     if (HAL_TIM_PWM_Start(&UAV_HEATER_TIMER, TIM_CHANNEL_1) != HAL_OK)
         Error_Handler();
-    __HAL_TIM_SET_AUTORELOAD(&UAV_HEATER_TIMER, 999);
-    __HAL_TIM_SET_COMPARE(&UAV_HEATER_TIMER, TIM_CHANNEL_1, 0);
 }
 void uav_device_heater_write(uint16_t value) {
-    __HAL_TIM_SET_COMPARE(&UAV_HEATER_TIMER, TIM_CHANNEL_1, value > 999 ? 999 : value);
+    __HAL_TIM_SET_COMPARE(&UAV_HEATER_TIMER, TIM_CHANNEL_1, value > 1000 ? 1000 : value);
 }
 void uav_device_delay_us(uint32_t us) {
     volatile uint32_t count = (HAL_RCC_GetHCLKFreq() / 4000000) * us;

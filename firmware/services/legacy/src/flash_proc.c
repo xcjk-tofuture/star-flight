@@ -8,6 +8,7 @@
 #include "uav_actuator.h"
 #include "log_service.h"
 #include "queue.h"
+#include "imu_heater.h"
 #include "semphr.h"
 #include <string.h>
 static SemaphoreHandle_t storage_mutex;
@@ -189,6 +190,7 @@ void Flash_Task_Proc(void const *arg) {
         if (xQueueReceive(writes,&r,portMAX_DELAY)!=pdPASS) continue;
         uint32_t sequence=0; flight_snapshot_t flight; flight_snapshot_read(&flight);
         uav_actuator_stop(); flight_attitude_invalidate();
+        uav_imu_heater_pause();
         storage_lock();
         int status=flight.state==0 ? nv_store_put(&store,r.kind,1,r.bytes,r.length,&sequence):NV_IO;
         if (status!=NV_OK && !store.ready) {

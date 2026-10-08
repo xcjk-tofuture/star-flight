@@ -9,7 +9,8 @@
 #include "imu_calibration_config.h"
 #include "imu_processing_config.h"
 #include "flash_proc.h"
-#include "pid.h"
+#include "imu_heater.h"
+#include "app_settings.h"
 #include "tim.h"
 #include "stdio.h"
 #include <string.h>
@@ -46,8 +47,6 @@ void sensor_snapshot_read(_imuData_all *out) {
 }
 _ahrs_data attitude_t;
 
-PID_DATA imu_temperature_control_pid_data;
-PID imu_temperature_control_pid;
 
 u8 SensorError = 0;
 static u8 GyroCalFlag = 1; // 传感器校准标准位
@@ -184,6 +183,8 @@ void Sensor_Data_Task_Proc(void const *argument) {
     TickType_t wake=xTaskGetTickCount();
     uint8_t storage_paused=0;
     uint32_t storage_seen=uav_storage_epoch();
+    uint16_t heater_target_seen=0;
+    uint8_t heater_gyro_done=0;
     for (;;) {
         vTaskDelayUntil(&wake,pdMS_TO_TICKS(UAV_IMU_SAMPLE_PERIOD_MS));
         uint32_t now=platform_millis();
@@ -200,6 +201,7 @@ void Sensor_Data_Task_Proc(void const *argument) {
             mag_turn_seen=0;
         }
         if (uav_storage_busy()) {
+            uav_imu_heater_pause();
             if (!storage_paused) uav_imu_pipeline_discard(&imu_pipeline);
             storage_paused=1; flight_attitude_invalidate(); continue;
         }
@@ -282,14 +284,25 @@ void Sensor_Data_Task_Proc(void const *argument) {
         }
         if ((uint32_t)(now-last_temp)>=UAV_IMU_TEMPERATURE_PERIOD_MS) {
             last_temp=now;
-            if (!Bmi088Init_Flag) ReadAccTemperature(&imudata_all.f_temperature);
+            float temperature=0;
+            int valid=!Bmi088Init_Flag && uav_sensor_read_temperature(&temperature)==0;
+            imudata_all.f_temperature=valid ? temperature:NAN;
+            uav_imu_heater_sample(temperature,(uint8_t)valid,now);
         }
         if ((uint32_t)(now-last_heater)>=50u) {
             last_heater=now;
-            if (!Bmi088Init_Flag && isfinite(imudata_all.f_temperature) &&
-                imudata_all.f_temperature>=-40 && imudata_all.f_temperature<=85)
-                IMU_Temperature_Control(40);
-            else uav_device_heater_write(0);
+            uav_imu_heater_tick(now);
+            uav_settings_snapshot_t settings; uav_settings_snapshot(&settings);
+            if (!settings.values.value[UAV_SETTING_HEATER_ENABLED] || heater_target_seen!=settings.values.value[UAV_SETTING_HEATER_TARGET]) {
+                heater_gyro_done=0; heater_target_seen=settings.values.value[UAV_SETTING_HEATER_TARGET];
+            }
+            uav_heater_stats_t heater; uav_imu_heater_stats(&heater);
+            flight_snapshot_t flight; flight_snapshot_read(&flight);
+            if (!heater_gyro_done && heater.state==UAV_HEATER_READY && flight.state==0 &&
+                !GyroCalFlag && !AccelCalFlag && !MagCalFlag && !sbus_calibration_active()) {
+                accel_restart_gyro=1; heater_gyro_done=1;
+                uav_logf("INFO","HEATER","stable=1 gyro_recalibration=1 disarmed=1");
+            }
         }
         if (!SPL06Flag && (uint32_t)(now-last_baro)>=UAV_IMU_BARO_PERIOD_MS) {
             last_baro=now; imudata_all.Pressure=Drv_SPl0601_Read();
@@ -592,30 +605,8 @@ static void accel_calibration_update(uint32_t now) {
                  accel_calibrator.count,accel_calibrator.reason,(unsigned long)(now-accel_started_ms));
     }
 }
-void IMU_Temperature_Control_Init() // IMU恒温控制初始化
-{
-    uav_device_heater_init();
-
-    imu_temperature_control_pid_data.ErrorMax = 20;
-    imu_temperature_control_pid_data.DifferentialMax = 70;
-    imu_temperature_control_pid_data.IntegrateMax = 90;
-
-    imu_temperature_control_pid_data.Kf = 0; // 前馈控制
-
-    imu_temperature_control_pid_data.Kp = 0.01;
-    imu_temperature_control_pid_data.Ki = 0;
-    imu_temperature_control_pid_data.Kd = 0;
-}
-
-void IMU_Temperature_Control(float target) // IMU恒温控制  输入温度
-{
-    s16 out;
-    out = (s16)PID_Control(&imu_temperature_control_pid, &imu_temperature_control_pid_data, 0.05f,
-                           0, target, imudata_all.f_temperature, 1000);
-    out = out > 999 ? 999 : out;
-    out = out < 0 ? 0 : out;
-    uav_device_heater_write((uint16_t)out);
-    // printf("out:%d\r\n", out);
+void IMU_Temperature_Control_Init(void) {
+    uav_imu_heater_init();
 }
 
 /****************************************************************************************************
