@@ -5,7 +5,8 @@
 static int configure_filters(uav_imu_pipeline_t *p, float rate) {
     if (uav_biquad_configure(&p->accel_filter, rate, p->config.accel_cutoff_hz) ||
         uav_biquad_configure(&p->gyro_filter, rate, p->config.gyro_cutoff_hz) ||
-        uav_biquad_configure(&p->calibration_filter, rate, p->config.calibration_cutoff_hz))
+        uav_biquad_configure(&p->calibration_filter, rate, p->config.calibration_cutoff_hz) ||
+        uav_biquad_configure(&p->accel_calibration_filter, rate, p->config.calibration_cutoff_hz))
         return -1;
     p->configured_hz = rate;
     return 0;
@@ -19,6 +20,7 @@ static void discontinuity(uav_imu_pipeline_t *p) {
     uav_biquad_reset(&p->accel_filter);
     uav_biquad_reset(&p->gyro_filter);
     uav_biquad_reset(&p->calibration_filter);
+    uav_biquad_reset(&p->accel_calibration_filter);
     p->sample.valid = 0;
 }
 void uav_imu_pipeline_discard(uav_imu_pipeline_t *p) { if (p) discontinuity(p); }
@@ -30,6 +32,7 @@ int uav_imu_pipeline_init(uav_imu_pipeline_t *p, const uav_imu_config_t *config)
     p->config = *config;
     p->stats.dt_min_us = UINT32_MAX;
     p->stats.measured_hz = config->sample_hz;
+    for (unsigned i=0;i<3;i++) p->accel_scale[i]=1;
     return configure_filters(p, config->sample_hz);
 }
 int uav_imu_pipeline_push(uav_imu_pipeline_t *p, const float a[3], const float g[3], uint32_t us) {
@@ -63,8 +66,10 @@ int uav_imu_pipeline_push(uav_imu_pipeline_t *p, const float a[3], const float g
             p->rate_us = 0; p->rate_samples = 0;
         }
     }
-    float filtered_rate[3];
-    if (uav_biquad_apply(&p->accel_filter, a, p->sample.acc) ||
+    float filtered_rate[3],corrected[3];
+    for (unsigned i=0;i<3;i++) corrected[i]=(a[i]-p->accel_bias[i])*p->accel_scale[i];
+    if (uav_biquad_apply(&p->accel_filter, corrected, p->sample.acc) ||
+        uav_biquad_apply(&p->accel_calibration_filter, a, p->sample.acc_uncalibrated) ||
         uav_biquad_apply(&p->gyro_filter, g, filtered_rate) ||
         uav_biquad_apply(&p->calibration_filter, g, p->sample.gyro_calibration)) {
         p->stats.invalid_samples++;
@@ -104,4 +109,11 @@ void uav_imu_pipeline_set_bias(uav_imu_pipeline_t *p, const float bias[3]) {
     /* Filters always process absolute gyro; a new offset has no filter transient. */
     p->integrated_us = 0;
     memset(p->angle_integral, 0, sizeof(p->angle_integral));
+}
+int uav_imu_pipeline_set_accel_calibration(uav_imu_pipeline_t *p, const float bias[3], const float scale[3]) {
+    if (!p || !bias || !scale) return -1;
+    for (unsigned i=0;i<3;i++)
+        if (!isfinite(bias[i]) || fabsf(bias[i])>1 || !isfinite(scale[i]) || scale[i]<.7f || scale[i]>1.3f) return -1;
+    memcpy(p->accel_bias,bias,sizeof(p->accel_bias)); memcpy(p->accel_scale,scale,sizeof(p->accel_scale));
+    discontinuity(p); return 0;
 }

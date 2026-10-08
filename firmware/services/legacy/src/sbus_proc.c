@@ -78,6 +78,9 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
             uav_logf("WARN", "SBUS", "calibration rejected: flight_state=%u", (unsigned)flight.state);
             request = 0;
         }
+        if ((request&1u) && (sensor_imu_calibrating() || sensors_mag_calibration_active())) {
+            uav_logf("WARN","SBUS","start rejected: sensor calibration active"); request=0;
+        }
         if ((request & 1u) && !remote_save_ticket) {
 
             remoteCaliFlag = 1;

@@ -16,6 +16,7 @@
 
 #define RAD_PER_DEG 0.017453293f
 #define DEG_PER_RAD 57.29577951f
+#define MAG_ROTATION_TARGET_RAD 6.28318530718f
 
 #define EXTERN_IMU 0
 
@@ -61,11 +62,20 @@ static uav_mag_calibrator_t mag_calibrator;
 static uav_mag_calibration_t mag_candidate;
 static uint8_t magCalistep, mag_fit_reason;
 static uint32_t mag_started_ms, mag_fit_ms, mag_save_ticket, mag_finished_ms, mag_progress_ms;
+static float mag_rotation[3], mag_turn_rate;
+static uint32_t mag_turn_us;
+static uint8_t mag_turn_seen;
+static uint8_t mag_fit_attempted;
+static uav_accel_calibrator_t accel_calibrator;
+static uav_accel_calibration_t accel_candidate;
+static uint8_t AccelCalFlag, accel_requests, accel_restart_gyro;
+static uint32_t accel_started_ms, accel_save_ticket, accel_finished_ms, accel_progress_ms;
+static void accel_calibration_update(uint32_t now);
 
 static u8 MagCalFlag = 0;
 uint8_t sensor_imu_calibrating(void) {
     taskENTER_CRITICAL();
-    uint8_t active = GyroCalFlag;
+    uint8_t active = GyroCalFlag || AccelCalFlag;
     taskEXIT_CRITICAL();
     return active;
 }
@@ -95,8 +105,48 @@ void sensor_mag_calibration_stats_read(sensor_mag_calibration_stats_t *out) {
     taskENTER_CRITICAL();
     *out=(sensor_mag_calibration_stats_t){mag_calibrator.count,
         (uint16_t)(isfinite(mag_candidate.rms_fraction) && mag_candidate.rms_fraction<65 ? mag_candidate.rms_fraction*1000:65535), (uint8_t)mag_candidate.coverage,
-        mag_fit_reason, magCalistep};
+        mag_fit_reason, magCalistep, {0}, 0, 0, (uint8_t)(mag_fit_attempted && mag_candidate.samples>0)};
+    if (!out->quality_ready) out->coverage=0;
+    unsigned axis=0;
+    for (unsigned i=0;i<3;i++) {
+        out->rotation[i]=mag_rotation[i]>=MAG_ROTATION_TARGET_RAD ? 100:
+            (uint8_t)(mag_rotation[i]*100/MAG_ROTATION_TARGET_RAD);
+        if (mag_rotation[i]<mag_rotation[axis]) axis=i;
+    }
+    out->axis=(uint8_t)axis;
+    out->hint=mag_turn_rate>1.5f ? 1:mag_turn_rate<.1f ? 2:0;
     taskEXIT_CRITICAL();
+}
+void sensors_request_accel_calibration(void) {
+    taskENTER_CRITICAL(); accel_requests|=1u; taskEXIT_CRITICAL();
+}
+void sensors_confirm_accel_face(void) {
+    taskENTER_CRITICAL(); accel_requests|=2u; taskEXIT_CRITICAL();
+}
+void sensors_cancel_accel_calibration(void) {
+    taskENTER_CRITICAL(); accel_requests|=4u; taskEXIT_CRITICAL();
+}
+uint8_t sensors_accel_calibration_active(void) { return AccelCalFlag; }
+void sensor_accel_calibration_stats_read(sensor_accel_calibration_stats_t *out) {
+    taskENTER_CRITICAL();
+    *out=(sensor_accel_calibration_stats_t){accel_calibrator.count,
+        (uint16_t)(isfinite(accel_candidate.rms_fraction) && accel_candidate.rms_fraction<65 ? accel_candidate.rms_fraction*1000:65535), accel_calibrator.mask, accel_calibrator.target,
+        accel_calibrator.detected, accel_calibrator.phase, accel_calibrator.reason, AccelCalFlag,
+        {imu_pipeline.sample.acc_uncalibrated[0],imu_pipeline.sample.acc_uncalibrated[1],imu_pipeline.sample.acc_uncalibrated[2]}};
+    taskEXIT_CRITICAL();
+}
+static int mag_rotations_complete(void) {
+    return mag_rotation[0]>=MAG_ROTATION_TARGET_RAD && mag_rotation[1]>=MAG_ROTATION_TARGET_RAD &&
+           mag_rotation[2]>=MAG_ROTATION_TARGET_RAD;
+}
+static void mag_rotation_update(uint32_t us) {
+    const float *g=imu_pipeline.sample.gyro_control;
+    mag_turn_rate=sqrtf(g[0]*g[0]+g[1]*g[1]+g[2]*g[2]);
+    uint32_t dt=(uint32_t)(us-mag_turn_us); mag_turn_us=us;
+    if (!mag_turn_seen) { mag_turn_seen=1; return; }
+    if (!dt || dt>10000 || mag_turn_rate>1.5f || mag_turn_rate<.1f) return;
+    for (unsigned i=0;i<3;i++) if (fabsf(g[i])>=.1f)
+        mag_rotation[i]=fminf(MAG_ROTATION_TARGET_RAD,mag_rotation[i]+fabsf(g[i])*dt*1e-6f);
 }
 uint8_t sensors_mag_calibration_active(void) { return MagCalFlag; } // 传感器校准标准位
 u8 Bmi088Init_Flag = 1;
@@ -127,6 +177,9 @@ void Sensor_Data_Task_Proc(void const *argument) {
     int configured=uav_imu_pipeline_init(&imu_pipeline,&uav_board_imu_processing)==0 &&
                    uav_fusion_init(&imu_fusion,&uav_board_fusion)==0 &&
                    uav_gyro_calibration_init(&startup_gyro,&uav_board_gyro_calibration)==0;
+    float acc_bias[3]={imudata_all.accoffsetbias.x,imudata_all.accoffsetbias.y,imudata_all.accoffsetbias.z};
+    float acc_scale[3]={imudata_all.accscalebias.x,imudata_all.accscalebias.y,imudata_all.accscalebias.z};
+    if (configured && uav_imu_pipeline_set_accel_calibration(&imu_pipeline,acc_bias,acc_scale)) configured=0;
     if (!configured) { startup_gyro.failed=1; GyroCalFlag=0; SensorError=1; }
     uav_logf(configured ? "INFO":"ERROR","IMU_PIPE",
              "sample_target=500Hz burst=ACC8+GYRO7 fusion_target=200Hz gyro_LPF=40Hz acc_LPF=30Hz cal_LPF=5Hz max_gap=10ms configured=%u",
@@ -157,6 +210,8 @@ void Sensor_Data_Task_Proc(void const *argument) {
         if (storage_current!=storage_seen) {
             storage_seen=storage_current; storage_paused=1;
             uav_imu_pipeline_discard(&imu_pipeline);
+            if (AccelCalFlag) uav_accel_calibrator_discard_window(&accel_calibrator);
+            mag_turn_seen=0;
         }
         if (uav_storage_busy()) {
             if (!storage_paused) uav_imu_pipeline_discard(&imu_pipeline);
@@ -168,6 +223,13 @@ void Sensor_Data_Task_Proc(void const *argument) {
                 uav_gyro_calibration_init(&startup_gyro,&uav_board_gyro_calibration);
                 warmup_start=now; cal_timing_resets++;
             }
+        }
+        if (accel_restart_gyro) {
+            accel_restart_gyro=0;
+            uav_gyro_calibration_init(&startup_gyro,&uav_board_gyro_calibration);
+            GyroCalFlag=1; cal_start=cal_report=warmup_start=now;
+            memset(rejected,0,sizeof(rejected)); cal_timing_resets=0;
+            SensorError=Bmi088Init_Flag || AK8975Flag;
         }
         if (GyroCalFlag && uav_gyro_calibration_expire(&startup_gyro,(uint32_t)(now-cal_start),UAV_GYRO_CAL_TIMEOUT_MS)) {
             GyroCalFlag=0; SensorError=1; flight_attitude_invalidate();
@@ -187,6 +249,8 @@ void Sensor_Data_Task_Proc(void const *argument) {
         if (!sample_good) {
             if (read_status) { imu_read_errors++; uav_imu_pipeline_discard(&imu_pipeline); }
             flight_attitude_invalidate();
+            if (AccelCalFlag) uav_accel_calibrator_discard_window(&accel_calibrator);
+            mag_turn_seen=0;
             if (GyroCalFlag) {
                 uav_gyro_calibration_init(&startup_gyro,&uav_board_gyro_calibration);
                 cal_timing_resets++; warmup_start=now;
@@ -195,6 +259,16 @@ void Sensor_Data_Task_Proc(void const *argument) {
             test_acc=(acc_raw_data_t){acc[0],acc[1],acc[2]};
             test_gyro=(gyro_raw_data_t){gyro[0],gyro[1],gyro[2]};
             copy_imu_sample();
+            if (MagCalFlag) mag_rotation_update(sample_us);
+            if (AccelCalFlag && accel_calibrator.phase<=UAV_ACCEL_SAMPLE) {
+                uint8_t before=accel_calibrator.mask,face=accel_calibrator.target;
+                (void)uav_accel_calibrator_feed(&accel_calibrator,acc,imu_pipeline.sample.acc_uncalibrated,
+                                               imu_pipeline.sample.gyro_control,now);
+                if (accel_calibrator.mask!=before)
+                    uav_logf("INFO","ACC_CAL","face=%u complete mask=0x%02x mean_milli_mps2=%ld,%ld,%ld",
+                             face,accel_calibrator.mask,(long)(accel_calibrator.faces[face][0]*1000),
+                             (long)(accel_calibrator.faces[face][1]*1000),(long)(accel_calibrator.faces[face][2]*1000));
+            }
             if (GyroCalFlag && previous_resets!=imu_pipeline.stats.filter_resets) {
                 uav_gyro_calibration_init(&startup_gyro,&uav_board_gyro_calibration);
                 warmup_start=now; cal_timing_resets++;
@@ -206,7 +280,8 @@ void Sensor_Data_Task_Proc(void const *argument) {
             if (status==1) {
                 test_mag=(mag_raw_data_t){field[0],field[1],field[2]};
                 mag_sample_us=platform_micros(); mag_fresh_samples++;
-                if (MagCalFlag && magCalistep==SENSOR_MAG_COLLECT)
+                if (MagCalFlag && sample_good && magCalistep==SENSOR_MAG_COLLECT && mag_turn_seen &&
+                    mag_turn_rate>=.1f && mag_turn_rate<=1.5f)
                     (void)uav_mag_calibrator_feed(&mag_calibrator,field,now);
             } else if (status<0) mag_read_errors++;
             else mag_not_ready++;
@@ -242,15 +317,39 @@ void Sensor_Data_Task_Proc(void const *argument) {
         }
         if ((request & 1u) && !MagCalFlag) {
             flight_snapshot_t flight; flight_snapshot_read(&flight);
-            if (flight.state==0 && !GyroCalFlag && !startup_gyro.failed && !AK8975Flag) {
+            if (flight.state==0 && !GyroCalFlag && !AccelCalFlag && !sbus_calibration_active() &&
+                !startup_gyro.failed && !AK8975Flag && uav_storage_ready()) {
                 uav_mag_calibrator_init(&mag_calibrator); memset(&mag_candidate,0,sizeof(mag_candidate));
                 mag_started_ms=mag_fit_ms=mag_progress_ms=now; mag_save_ticket=0;
                 magCalistep=SENSOR_MAG_COLLECT; mag_fit_reason=UAV_MAG_CAL_SAMPLES;
                 MagCalFlag=1; flight_attitude_invalidate();
+                memset(mag_rotation,0,sizeof(mag_rotation)); mag_turn_seen=0; mag_turn_rate=0;
+                mag_fit_attempted=0;
                 uav_logf("INFO","MAG_CAL","ellipsoid start min_samples=200 capacity=512 timeout=180s rotate=ALL_AXES raw_fresh_only=1");
             } else uav_logf("WARN","SENSOR","magnetic calibration rejected: state=%u gyro_cal=%u failed=%u mag_rc=%u",
                            (unsigned)flight.state,(unsigned)GyroCalFlag,(unsigned)startup_gyro.failed,(unsigned)AK8975Flag);
         }
+        taskENTER_CRITICAL();
+        uint8_t accel_request=accel_requests; accel_requests=0;
+        taskEXIT_CRITICAL();
+        if ((accel_request&4u) && AccelCalFlag && accel_calibrator.phase<UAV_ACCEL_SAVE) {
+            AccelCalFlag=0; accel_calibrator.phase=UAV_ACCEL_PLACE;
+            Cold_Start_ARHS(imudata_all,&attitude_t);
+            uav_logf("INFO","ACC_CAL","cancelled; previous calibration retained");
+        }
+        if ((accel_request&1u) && !AccelCalFlag) {
+            flight_snapshot_t flight; flight_snapshot_read(&flight);
+            if (flight.state==0 && !GyroCalFlag && !MagCalFlag && !Bmi088Init_Flag &&
+                !sbus_calibration_active() && uav_storage_ready()) {
+                uav_accel_calibrator_init(&accel_calibrator); memset(&accel_candidate,0,sizeof(accel_candidate));
+                accel_started_ms=accel_progress_ms=now; accel_save_ticket=0; AccelCalFlag=1;
+                flight_attitude_invalidate();
+                uav_logf("INFO","ACC_CAL","start faces=Z+,Z-,X+,X-,Y+,Y- LPF=5Hz hold_ms=800 samples_per_face=200 sample_Hz=100 timeout_s=300 confirm_each_face=1");
+            } else uav_logf("WARN","ACC_CAL","start rejected state=%u gyro=%u mag_cal=%u bmi=%u",
+                           flight.state,GyroCalFlag,MagCalFlag,Bmi088Init_Flag);
+        }
+        if ((accel_request&2u) && AccelCalFlag) uav_accel_calibrator_confirm(&accel_calibrator);
+        if (AccelCalFlag) accel_calibration_update(now);
         if (MagCalFlag) Mag_Zero_Offset_Calibration(&imudata_all);
         if (sample_good && (int32_t)(sample_us-next_fusion)>=0) {
             next_fusion+=UAV_IMU_FUSION_PERIOD_US;
@@ -271,12 +370,12 @@ void Sensor_Data_Task_Proc(void const *argument) {
                         imu_frame.dt_s=0;
                     }
                 }
-                if (!GyroCalFlag && !startup_gyro.failed && !MagCalFlag && imu_frame.dt_s>0) {
+                if (!GyroCalFlag && !startup_gyro.failed && !MagCalFlag && !AccelCalFlag && imu_frame.dt_s>0) {
                     if (AHRS_Mahony_Update(imudata_all,&attitude_t)==0)
                         flight_attitude_publish_sample(attitude_t.roll,attitude_t.pitch,attitude_t.yaw,
                             attitude_t.rollSpeed,attitude_t.pitchSpeed,attitude_t.yawSpeed,sample_ms);
                     else flight_attitude_invalidate();
-                } else if (MagCalFlag) {
+                } else if (MagCalFlag || AccelCalFlag) {
                     flight_attitude_invalidate();
                 }
                 publish_sensor_values();
@@ -412,8 +511,11 @@ void Mag_Zero_Offset_Calibration(_imuData_all *imu) {
         if ((uint32_t)(now-mag_started_ms)>=UAV_MAG_CAL_TIMEOUT_MS) {
             mag_calibration_fail(UAV_MAG_CAL_TIMEOUT); return;
         }
-        if (mag_calibrator.count>=UAV_MAG_CAL_MIN_SAMPLES && (uint32_t)(now-mag_fit_ms)>=5000u) {
+        if (mag_calibrator.count>=UAV_MAG_CAL_MIN_SAMPLES && mag_rotations_complete() &&
+            (uint32_t)(now-mag_fit_ms)>=5000u) {
             mag_fit_ms=now; magCalistep=SENSOR_MAG_FIT;
+            mag_fit_attempted=1;
+            mag_candidate.samples=0;
             mag_fit_reason=(uint8_t)uav_mag_calibrator_fit(&mag_calibrator,&mag_candidate);
             if (mag_fit_reason==UAV_MAG_CAL_OK) {
                 if (UAV_Write_Param_Mag(&mag_candidate,&mag_save_ticket)!=0) {
@@ -445,6 +547,55 @@ void Mag_Zero_Offset_Calibration(_imuData_all *imu) {
                  (long)(mag_candidate.bias[0]*1000),(long)(mag_candidate.bias[1]*1000),(long)(mag_candidate.bias[2]*1000));
     } else if (magCalistep==SENSOR_MAG_DONE && (uint32_t)(now-mag_finished_ms)>=1000u) {
         MagCalFlag=0;
+    }
+}
+static void accel_calibration_fail(uint8_t reason) {
+    accel_calibrator.reason=reason; accel_calibrator.phase=UAV_ACCEL_FAILED; AccelCalFlag=0;
+    Cold_Start_ARHS(imudata_all,&attitude_t);
+    uav_logf("ERROR","ACC_CAL","FAILED reason=%u mask=0x%02x previous_calibration_retained=1",
+             reason,accel_calibrator.mask);
+}
+static void accel_calibration_update(uint32_t now) {
+    if (accel_calibrator.phase<UAV_ACCEL_SAVE && (uint32_t)(now-accel_started_ms)>=UAV_ACCEL_CAL_TIMEOUT_MS) {
+        accel_calibration_fail(UAV_ACCEL_REASON_TIMEOUT); return;
+    }
+    if (accel_calibrator.phase==UAV_ACCEL_FIT) {
+        int reason=uav_accel_calibrator_fit(&accel_calibrator,&accel_candidate);
+        if (reason) {
+            if (accel_calibrator.phase==UAV_ACCEL_PLACE)
+                uav_logf("WARN","ACC_CAL","recapture face=%u mask=0x%02x reason=tilted keep_level=1",
+                         accel_calibrator.target,accel_calibrator.mask);
+            else accel_calibration_fail((uint8_t)reason);
+            return;
+        }
+        if (UAV_Write_Param_Accel(&accel_candidate,&accel_save_ticket)) {
+            accel_calibration_fail(UAV_ACCEL_REASON_STORAGE); return;
+        }
+        accel_calibrator.phase=UAV_ACCEL_SAVE;
+        uav_logf("INFO","ACC_CAL","fit accepted rms_permille=%lu ticket=%lu awaiting_readback=1",
+                 (unsigned long)(accel_candidate.rms_fraction*1000),(unsigned long)accel_save_ticket);
+    } else if (accel_calibrator.phase==UAV_ACCEL_SAVE) {
+        int result=uav_storage_result(accel_save_ticket);
+        if (!result) return;
+        if (result<0 || uav_imu_pipeline_set_accel_calibration(&imu_pipeline,accel_candidate.bias,accel_candidate.scale)) {
+            accel_calibration_fail(UAV_ACCEL_REASON_STORAGE); return;
+        }
+        imudata_all.accoffsetbias=(Vector3f_t){accel_candidate.bias[0],accel_candidate.bias[1],accel_candidate.bias[2]};
+        imudata_all.accscalebias=(Vector3f_t){accel_candidate.scale[0],accel_candidate.scale[1],accel_candidate.scale[2]};
+        imu_frame.dt_s=0; Cold_Start_ARHS(imudata_all,&attitude_t);
+        accel_finished_ms=now; accel_calibrator.phase=UAV_ACCEL_DONE;
+        if (startup_gyro.failed) accel_restart_gyro=1;
+        uav_logf("INFO","ACC_CAL","COMPLETE saved=1 readback=1 applied_before_LPF=1 bias_milli_mps2=%ld,%ld,%ld scale_milli=%ld,%ld,%ld",
+                 (long)(accel_candidate.bias[0]*1000),(long)(accel_candidate.bias[1]*1000),(long)(accel_candidate.bias[2]*1000),
+                 (long)(accel_candidate.scale[0]*1000),(long)(accel_candidate.scale[1]*1000),(long)(accel_candidate.scale[2]*1000));
+    } else if (accel_calibrator.phase==UAV_ACCEL_DONE && (uint32_t)(now-accel_finished_ms)>=1200u) {
+        AccelCalFlag=0;
+    }
+    if ((uint32_t)(now-accel_progress_ms)>=1000u && accel_calibrator.phase<UAV_ACCEL_SAVE) {
+        accel_progress_ms=now;
+        uav_logf("INFO","ACC_CAL","phase=%u target=%u detected=%u mask=0x%02x collected=%u/200 reason=%u elapsed_ms=%lu",
+                 accel_calibrator.phase,accel_calibrator.target,accel_calibrator.detected,accel_calibrator.mask,
+                 accel_calibrator.count,accel_calibrator.reason,(unsigned long)(now-accel_started_ms));
     }
 }
 void IMU_Temperature_Control_Init() // IMU恒温控制初始化

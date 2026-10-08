@@ -12,6 +12,7 @@ typedef struct {
 } uav_imu_stats_t;
 typedef struct {
     float acc[3], gyro_control[3], gyro_calibration[3];
+    float acc_uncalibrated[3];
     uint32_t timestamp_us;
     uint8_t valid;
 } uav_imu_sample_t;
@@ -21,10 +22,11 @@ typedef struct {
 } uav_imu_frame_t;
 typedef struct {
     uav_imu_config_t config;
-    uav_biquad_t accel_filter, gyro_filter, calibration_filter;
+    uav_biquad_t accel_filter, gyro_filter, calibration_filter, accel_calibration_filter;
     uav_imu_stats_t stats;
     uav_imu_sample_t sample;
     float gyro_bias[3], previous_gyro[3], angle_integral[3], configured_hz;
+    float accel_bias[3], accel_scale[3];
     uint32_t integrated_us, previous_us, rate_us;
     uint16_t rate_samples;
     uint8_t have_previous;
@@ -38,4 +40,6 @@ int uav_imu_pipeline_push(uav_imu_pipeline_t *pipeline, const float acc[3],
 int uav_imu_pipeline_consume(uav_imu_pipeline_t *pipeline, uav_imu_frame_t *frame);
 void uav_imu_pipeline_set_bias(uav_imu_pipeline_t *pipeline, const float absolute_bias[3]);
 void uav_imu_pipeline_discard(uav_imu_pipeline_t *pipeline);
+int uav_imu_pipeline_set_accel_calibration(uav_imu_pipeline_t *pipeline,
+                                          const float bias[3], const float scale[3]);
 #endif
