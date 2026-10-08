@@ -10,6 +10,7 @@
 #include "flight_snapshot.h"
 #include "log_service.h"
 #include "flash_proc.h"
+#include "sbus_stream.h"
 #include <string.h>
 
 extern void UAV_Read_Param_Remote(_sbus_ch_struct *channel_data);
@@ -21,9 +22,14 @@ static u16 SbusChannels[16];
 static QueueHandle_t sbus_frames;
 static uint32_t last_frame_ms;
 static uint8_t frame_seen;
+static uint32_t valid_frame_ms, frame_lost_count, failsafe_count;
+static volatile uint32_t rx_chunks, rx_bytes, queue_drops;
+static uint8_t flags_seen, receiver_seen;
+static uav_sbus_stream_t stream;
+typedef struct { uint32_t received_ms; uint16_t length; uint8_t bytes[100]; } sbus_chunk_t;
 static uint8_t decode_buffer[25];
 int sbus_transport_init(void) {
-    sbus_frames = xQueueCreate(4, 25);
+    sbus_frames = xQueueCreate(4, sizeof(sbus_chunk_t));
     return sbus_frames ? 0 : -1;
 }
 
@@ -56,6 +62,42 @@ static u8 remoteCaliFlag = 0;
 static u8 remoteCaliSaveFlashFlag = 0;
 static uint8_t calibration_requests;
 static uint32_t remote_save_ticket;
+static _sbus_ch_struct original_calibration;
+void sbus_cancel_calibration(void) {
+    taskENTER_CRITICAL(); calibration_requests|=4u; taskEXIT_CRITICAL();
+}
+uint8_t sbus_calibration_saving(void) { return remote_save_ticket!=0; }
+static uint8_t invalid_ranges(void) {
+    uint8_t mask=0;
+#define CHECK_RANGE(i) \
+    if (!(SBUS_CH.CH##i##_MAX<=2047 && SBUS_CH.CH##i##_MAX>SBUS_CH.CH##i##_MIN && \
+          SBUS_CH.CH##i##_MAX-SBUS_CH.CH##i##_MIN>=100)) mask|=(uint8_t)(1u<<((i)-1))
+    CHECK_RANGE(1); CHECK_RANGE(2); CHECK_RANGE(3); CHECK_RANGE(4);
+    CHECK_RANGE(5); CHECK_RANGE(6); CHECK_RANGE(7); CHECK_RANGE(8);
+#undef CHECK_RANGE
+    return mask;
+}
+void sbus_diagnostics_read(sbus_diagnostics_t *out) {
+    uint32_t now=platform_millis();
+    taskENTER_CRITICAL();
+    *out=(sbus_diagnostics_t){.chunks=rx_chunks,.bytes=rx_bytes,.queue_drops=queue_drops,
+        .frames=stream.frames,.bad_frames=stream.rejected,.skipped_bytes=stream.discarded,
+        .frame_lost=frame_lost_count,.failsafe=failsafe_count,
+        .frame_age_ms=receiver_seen ? (uint32_t)(now-valid_frame_ms):UINT32_MAX,
+        .good_age_ms=frame_seen ? (uint32_t)(now-last_frame_ms):UINT32_MAX,
+        .receiver_present=(uint8_t)(receiver_seen && (uint32_t)(now-valid_frame_ms)<=100u),
+        .radio_ok=SBUS_CH.Connect_State,.calibrated=(uint8_t)remote_parameters_valid(),
+        .invalid_ranges=invalid_ranges(),.flags=flags_seen,.uart_error=huart6.ErrorCode,
+        .rx_running=(uint8_t)(huart6.RxState==HAL_UART_STATE_BUSY_RX)};
+    taskEXIT_CRITICAL();
+}
+static void received_frame(void *ctx, const uint8_t *frame, uint32_t ms) {
+    (void)ctx; receiver_seen=1; valid_frame_ms=ms; flags_seen=frame[23];
+    if (flags_seen&8u) { failsafe_count++; return; }
+    if (flags_seen&4u) { frame_lost_count++; return; }
+    memcpy(decode_buffer,frame,sizeof(decode_buffer)); Sbus_Channels_Proc();
+    last_frame_ms=ms; frame_seen=1;
+}
 void sbus_request_calibration(uint8_t save) {
     taskENTER_CRITICAL();
     calibration_requests |= save ? 2u : 1u;
@@ -66,6 +108,8 @@ uint8_t sbus_calibration_active(void) { return remoteCaliFlag; }
 void Sbus_Uart6_Task_Proc(void const *argument) {
     (void)argument;
     Channel_Param_Init();
+    uint32_t report_ms=platform_millis();
+    sbus_chunk_t chunk;
     for (;;) {
         uint8_t request;
         taskENTER_CRITICAL();
@@ -74,15 +118,15 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
         taskEXIT_CRITICAL();
         flight_snapshot_t flight;
         flight_snapshot_read(&flight);
-        if (request && flight.state != 0) {
+        if ((request&3u) && flight.state != 0) {
             uav_logf("WARN", "SBUS", "calibration rejected: flight_state=%u", (unsigned)flight.state);
-            request = 0;
+            request &= 4u;
         }
         if ((request&1u) && (sensor_imu_calibrating() || sensors_mag_calibration_active())) {
             uav_logf("WARN","SBUS","start rejected: sensor calibration active"); request=0;
         }
         if ((request & 1u) && !remote_save_ticket) {
-
+            original_calibration=SBUS_CH;
             remoteCaliFlag = 1;
             remoteCaliSaveFlashFlag = 0;
 #define RESET_RANGE(i)                                                                             \
@@ -100,6 +144,14 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
         }
         if (request & 2u)
             remoteCaliSaveFlashFlag = 1;
+        if ((request&4u) && remoteCaliFlag && !remote_save_ticket) {
+#define RESTORE_RANGE(i) SBUS_CH.CH##i##_MIN=original_calibration.CH##i##_MIN; SBUS_CH.CH##i##_MAX=original_calibration.CH##i##_MAX
+            RESTORE_RANGE(1); RESTORE_RANGE(2); RESTORE_RANGE(3); RESTORE_RANGE(4);
+            RESTORE_RANGE(5); RESTORE_RANGE(6); RESTORE_RANGE(7); RESTORE_RANGE(8);
+#undef RESTORE_RANGE
+            remoteCaliFlag=0; remoteCaliSaveFlashFlag=0;
+            uav_logf("INFO","RC_CAL","cancelled; previous ranges restored");
+        }
         if (remote_save_ticket) {
             int result=uav_storage_result(remote_save_ticket);
             if (result) {
@@ -109,18 +161,9 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
                          (unsigned)(result>0),result);
             }
         }
-        if (xQueueReceive(sbus_frames, decode_buffer, pdMS_TO_TICKS(20)) == pdPASS) {
-            if (decode_buffer[0] == 0x0F && decode_buffer[24] == 0x00 &&
-                !(decode_buffer[23] & 0x0C)) {
-                Sbus_Channels_Proc();
-                last_frame_ms = platform_millis();
-                frame_seen = 1;
-                SBUS_CH.Connect_State = 1;
-            } else
-                SBUS_CH.Connect_State = 0;
-        }
-        if (!frame_seen || (uint32_t)(platform_millis() - last_frame_ms) > 100)
-            SBUS_CH.Connect_State = 0;
+        if (xQueueReceive(sbus_frames,&chunk,pdMS_TO_TICKS(20))==pdPASS)
+            uav_sbus_stream_feed(&stream,chunk.bytes,chunk.length,chunk.received_ms,received_frame,NULL);
+        SBUS_CH.Connect_State=(uint8_t)(frame_seen && !(flags_seen&8u) && (uint32_t)(platform_millis()-last_frame_ms)<=100u);
         if (SBUS_CH.Connect_State && !remoteCaliFlag && remote_parameters_valid()) {
             _sbus_ch_cal_struct next = {0};
             next.CAL_CH1 =
@@ -153,6 +196,13 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
         taskENTER_CRITICAL();
         published_raw = SBUS_CH;
         taskEXIT_CRITICAL();
+        if ((uint32_t)(platform_millis()-report_ms)>=5000u) {
+            report_ms=platform_millis(); sbus_diagnostics_t d; sbus_diagnostics_read(&d);
+            uav_logf("INFO","SBUS","chunks=%lu bytes=%lu frames=%lu bad=%lu drop=%lu lost=%lu fs=%lu flags=0x%02x RX=%u raw=%u cal=%u invalid=0x%02x age_ms=%lu uart_error=0x%lx",
+                     (unsigned long)d.chunks,(unsigned long)d.bytes,(unsigned long)d.frames,(unsigned long)d.bad_frames,
+                     (unsigned long)d.queue_drops,(unsigned long)d.frame_lost,(unsigned long)d.failsafe,d.flags,d.rx_running,
+                     d.radio_ok,d.calibrated,d.invalid_ranges,(unsigned long)d.good_age_ms,(unsigned long)d.uart_error);
+        }
     }
 }
 
@@ -219,8 +269,12 @@ void Channel_Param_Init() {
 
 void Sbus_Uart6_IDLE_Proc(uint16_t size) {
     BaseType_t wake = pdFALSE;
-    if (size == 25 && sbus_frames)
-        xQueueSendFromISR(sbus_frames, SbusRxBuf, &wake);
+    rx_chunks++; rx_bytes+=size;
+    if (size && size<=100 && sbus_frames) {
+        sbus_chunk_t chunk={.received_ms=platform_millis(),.length=size};
+        memcpy(chunk.bytes,SbusRxBuf,size);
+        if (xQueueSendFromISR(sbus_frames,&chunk,&wake)!=pdPASS) queue_drops++;
+    } else queue_drops++;
     portYIELD_FROM_ISR(wake);
 }
 

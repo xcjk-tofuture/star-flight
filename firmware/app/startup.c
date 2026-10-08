@@ -29,7 +29,7 @@ extern osThreadId MotorTaskHandle;
 extern void Motor_Task_Proc(void const *argument);
 void app_tasks_init(void) {
     app_boot_resource_init("PC_RX", PC_Init, "depth=4 max_rx=100B telemetry=50ms");
-    app_boot_resource_init("SBUS_RX", sbus_transport_init, "depth=4 frame=25B timeout=100ms");
+    app_boot_resource_init("SBUS_RX", sbus_transport_init, "chunks=4x100B parser=25B 100k8E2 timeout=100ms");
     app_boot_resource_init("LOG", uav_log_init, "boot=8192B runtime=1024B chunk=64B");
     app_boot_resource_init("FLOW_RX", flow_transport_init, "depth=4 frame=14B timeout=100ms");
     app_boot_resource_init("SPI1_MUTEX", uav_spi1_init, "recursive priority_inheritance=1");
@@ -44,11 +44,11 @@ void app_tasks_init(void) {
     if (!KeyTaskHandle)
         Error_Handler();
     app_boot_log_task("Key", KeyTaskHandle, 128);
-    osThreadDef(Sbus, Sbus_Uart6_Task_Proc, osPriorityAboveNormal, 0, 256);
+    osThreadDef(Sbus, Sbus_Uart6_Task_Proc, osPriorityAboveNormal, 0, 384);
     SbusUart6TaskHandle = osThreadCreate(osThread(Sbus), NULL);
     if (!SbusUart6TaskHandle)
         Error_Handler();
-    app_boot_log_task("Sbus", SbusUart6TaskHandle, 256);
+    app_boot_log_task("Sbus", SbusUart6TaskHandle, 384);
     /* Keep the known working stack budget for rendering and the FPU context. */
     osThreadDef(OLED, OLED_Task_Proc, osPriorityIdle, 0, 1024);
     OLEDTaskHandle = osThreadCreate(osThread(OLED), NULL);

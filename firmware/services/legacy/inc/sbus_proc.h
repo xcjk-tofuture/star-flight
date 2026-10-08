@@ -73,6 +73,14 @@ void Remote_Channel_Calibration();
 int sbus_transport_init(void);
 void sbus_snapshot(_sbus_ch_cal_struct *out);
 void sbus_request_calibration(uint8_t save);
+void sbus_cancel_calibration(void);
+uint8_t sbus_calibration_saving(void);
+typedef struct {
+    uint32_t chunks, bytes, queue_drops, frames, bad_frames, skipped_bytes, frame_lost, failsafe;
+    uint32_t frame_age_ms, good_age_ms, uart_error;
+    uint8_t receiver_present, radio_ok, calibrated, invalid_ranges, flags, rx_running;
+} sbus_diagnostics_t;
+void sbus_diagnostics_read(sbus_diagnostics_t *out);
 uint8_t sbus_calibration_active(void);
 void sbus_raw_snapshot(_sbus_ch_struct *out);
 #endif
