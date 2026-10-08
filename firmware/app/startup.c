@@ -29,7 +29,7 @@ extern osThreadId MotorTaskHandle;
 extern void Motor_Task_Proc(void const *argument);
 void app_tasks_init(void) {
     app_boot_resource_init("PC_RX", PC_Init, "depth=4 max_rx=100B telemetry=50ms");
-    app_boot_resource_init("SBUS_RX", sbus_transport_init, "chunks=4x100B parser=25B 100k8E2 timeout=100ms");
+    app_boot_resource_init("SBUS_RX", sbus_transport_init, "chunks=4x100B parser=25B RX=100k8E1 legacy_profile timeout=100ms auto_rearm=1");
     app_boot_resource_init("LOG", uav_log_init, "boot=8192B runtime=1024B chunk=64B");
     app_boot_resource_init("FLOW_RX", flow_transport_init, "depth=4 frame=14B timeout=100ms");
     app_boot_resource_init("SPI1_MUTEX", uav_spi1_init, "recursive priority_inheritance=1");

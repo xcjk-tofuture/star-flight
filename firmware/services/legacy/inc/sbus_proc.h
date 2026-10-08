@@ -61,6 +61,7 @@ typedef struct {
 
 void Sbus_Uart6_Task_Proc(void const *argument);
 void Sbus_Uart6_IDLE_Proc(uint16_t Size);
+void sbus_uart_error_isr(uint32_t error);
 
 void Sbus_Channels_Proc(void);
 uint16_t Sbus_To_Pwm(uint16_t sbus_value);

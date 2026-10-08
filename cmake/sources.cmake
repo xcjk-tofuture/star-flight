@@ -95,6 +95,7 @@ set(FIRMWARE_SOURCES
   firmware/os/ports/freertos-10.3.1/GCC/ARM_CM4F/port.c
   firmware/platform/stm32/platform_time.c
   firmware/platform/stm32/serial_port.c
+  firmware/platform/stm32/sbus_rx_port.c
   firmware/platform/stm32/imu_sample_decode.c
   firmware/platform/stm32/startup_stm32f407xx.S
   firmware/services/legacy/src/AHRS.c

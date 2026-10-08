@@ -11,6 +11,7 @@
 #include "log_service.h"
 #include "flash_proc.h"
 #include "sbus_stream.h"
+#include "sbus_rx_port.h"
 #include <string.h>
 
 extern void UAV_Read_Param_Remote(_sbus_ch_struct *channel_data);
@@ -43,6 +44,10 @@ void sbus_snapshot(_sbus_ch_cal_struct *out) {
 }
 _sbus_ch_struct SBUS_CH;
 static _sbus_ch_struct published_raw;
+void sbus_uart_error_isr(uint32_t error) {
+    uav_sbus_rx_error_isr(error);
+    SBUS_CH.Connect_State=0; published_raw.Connect_State=0; CAL_SBUS_CH.Connect_State=0;
+}
 void sbus_raw_snapshot(_sbus_ch_struct *out) {
     taskENTER_CRITICAL();
     *out = published_raw;
@@ -88,7 +93,7 @@ void sbus_diagnostics_read(sbus_diagnostics_t *out) {
         .receiver_present=(uint8_t)(receiver_seen && (uint32_t)(now-valid_frame_ms)<=100u),
         .radio_ok=SBUS_CH.Connect_State,.calibrated=(uint8_t)remote_parameters_valid(),
         .invalid_ranges=invalid_ranges(),.flags=flags_seen,.uart_error=huart6.ErrorCode,
-        .rx_running=(uint8_t)(huart6.RxState==HAL_UART_STATE_BUSY_RX)};
+        .rx_running=uav_sbus_rx_running()};
     taskEXIT_CRITICAL();
 }
 static void received_frame(void *ctx, const uint8_t *frame, uint32_t ms) {
@@ -111,6 +116,14 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
     uint32_t report_ms=platform_millis();
     sbus_chunk_t chunk;
     for (;;) {
+        int restarted=uav_sbus_rx_service(platform_millis());
+        if (restarted) {
+            stream.used=0; receiver_seen=frame_seen=0;
+            SBUS_CH.Connect_State=0;
+            taskENTER_CRITICAL(); published_raw.Connect_State=0; CAL_SBUS_CH.Connect_State=0; taskEXIT_CRITICAL();
+            xQueueReset(sbus_frames);
+            if (restarted>0) uav_logf("INFO","SBUS_RX","DMA restarted; awaiting fresh frame");
+        }
         uint8_t request;
         taskENTER_CRITICAL();
         request = calibration_requests;
@@ -163,7 +176,8 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
         }
         if (xQueueReceive(sbus_frames,&chunk,pdMS_TO_TICKS(20))==pdPASS)
             uav_sbus_stream_feed(&stream,chunk.bytes,chunk.length,chunk.received_ms,received_frame,NULL);
-        SBUS_CH.Connect_State=(uint8_t)(frame_seen && !(flags_seen&8u) && (uint32_t)(platform_millis()-last_frame_ms)<=100u);
+        SBUS_CH.Connect_State=(uint8_t)(frame_seen && !uav_sbus_rx_pending() && uav_sbus_rx_running() &&
+            !(flags_seen&8u) && (uint32_t)(platform_millis()-last_frame_ms)<=100u);
         if (SBUS_CH.Connect_State && !remoteCaliFlag && remote_parameters_valid()) {
             _sbus_ch_cal_struct next = {0};
             next.CAL_CH1 =
@@ -184,6 +198,7 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
                 (uint16_t)Sbus_To_Range(SBUS_CH.CH8, 1000, 2000, SBUS_CH.CH8_MIN, SBUS_CH.CH8_MAX);
             next.Connect_State = 1;
             taskENTER_CRITICAL();
+            if (uav_sbus_rx_pending() || !uav_sbus_rx_running()) next.Connect_State=0;
             CAL_SBUS_CH = next;
             taskEXIT_CRITICAL();
         } else {
@@ -194,6 +209,7 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
                 Remote_Channel_Calibration();
         }
         taskENTER_CRITICAL();
+        if (uav_sbus_rx_pending()) { SBUS_CH.Connect_State=0; CAL_SBUS_CH.Connect_State=0; }
         published_raw = SBUS_CH;
         taskEXIT_CRITICAL();
         if ((uint32_t)(platform_millis()-report_ms)>=5000u) {
@@ -202,6 +218,12 @@ void Sbus_Uart6_Task_Proc(void const *argument) {
                      (unsigned long)d.chunks,(unsigned long)d.bytes,(unsigned long)d.frames,(unsigned long)d.bad_frames,
                      (unsigned long)d.queue_drops,(unsigned long)d.frame_lost,(unsigned long)d.failsafe,d.flags,d.rx_running,
                      d.radio_ok,d.calibrated,d.invalid_ranges,(unsigned long)d.good_age_ms,(unsigned long)d.uart_error);
+            uav_sbus_rx_stats_t rx; uav_sbus_rx_stats_read(&rx);
+            uav_logf("INFO","SBUS_RX","errors=%lu PE=%lu NE=%lu FE=%lu ORE=%lu DMA=%lu attempts=%lu recovered=%lu failed=%lu last_error=0x%lx last_hal=%lu RX=%u pending=%u",
+                     (unsigned long)rx.errors,(unsigned long)rx.parity,(unsigned long)rx.noise,(unsigned long)rx.framing,
+                     (unsigned long)rx.overrun,(unsigned long)rx.dma_errors,(unsigned long)rx.attempts,
+                     (unsigned long)rx.recovered,(unsigned long)rx.failed,(unsigned long)rx.last_error,
+                     (unsigned long)rx.last_status,rx.running,rx.pending);
         }
     }
 }
