@@ -77,6 +77,7 @@ static unsigned view_count(uint8_t page) {
 }
 void gui_dashboard_init(gui_dashboard_t *d) {
     memset(d, 0, sizeof(*d)); d->page = GUI_PAGE_OVERVIEW; open_root(d, 0);
+    d->screen=GUI_SCREEN_PAGE;
 }
 void gui_dashboard_set_page(gui_dashboard_t *d, uint8_t page) {
     if ((page >= 1 && page <= GUI_PAGE_COUNT) || page == GUI_PAGE_REMOTE_CAL || page == GUI_PAGE_MAG_CAL || page == GUI_PAGE_ACCEL_CAL) {
