@@ -1,4 +1,7 @@
 set(FIRMWARE_SOURCES
+  firmware/services/flow_stream.c
+  firmware/platform/stm32/flow_rx_port.c
+  firmware/algorithms/navigation/flow_measurement.c
   firmware/algorithms/calibration/gyro_calibration.c
   firmware/algorithms/calibration/mag_calibration.c
   firmware/algorithms/calibration/accel_calibration.c
@@ -118,6 +121,7 @@ set(FIRMWARE_SOURCES
   firmware/platform/syscalls.c
 )
 set(FIRMWARE_INCLUDES
+  firmware/algorithms/navigation
   firmware/algorithms/filter
   firmware/algorithms/calibration
   firmware/services/parameters
