@@ -88,7 +88,7 @@ void Flow_Task_Proc(void const *argument) {
     (void)argument; flow_chunk_t chunk;
     uint32_t last_report=platform_millis(); processed_generation=drop_generation;
     uav_flow_processor_init(&processor);
-    uav_logf("INFO","FLOW","profile=UPIX14 inferred_977d5b0=1 axes=SENSOR gyro_comp=UNCONFIRMED Qmin=40 range_Qmin=50 range=50..8000mm tilt=45deg preview_only=1");
+    uav_logf("INFO","FLOW","profile=UPIX14 family=T2/T201 model=UNCONFIRMED axes=SENSOR gyro_comp=NONE valid=F5 range_Qmin=50 range=50..8000mm tilt=45deg preview_only=1");
     for (;;) {
         uint32_t now=platform_millis();
         int recovered=uav_flow_rx_service(now);
@@ -105,9 +105,9 @@ void Flow_Task_Proc(void const *argument) {
             uav_logf("INFO","FLOW","chunks=%lu bytes=%lu frames=%lu bad=%lu drop=%lu RX=%u errors=%lu recovered=%lu",
                 (unsigned long)rx_chunks,(unsigned long)rx_bytes,(unsigned long)stream.frames,(unsigned long)stream.rejected,
                 (unsigned long)drops,uart.running,(unsigned long)uart.errors,(unsigned long)uart.recovered);
-            uav_logf("INFO","FLOW_MEAS","raw=%d,%d dt_us=%u range_mm=%u flowQ=%u rangeQ=%u flow_ok=%u range_ok=%u height_ok=%u reason=%u",
+            uav_logf("INFO","FLOW_MEAS","raw=%d,%d dt_us=%u range_mm=%u valid_raw=0x%02X valid_score=%u rangeQ=%u flow_ok=%u range_ok=%u height_ok=%u reason=%u",
                 latest_frame.integral_x,latest_frame.integral_y,latest_frame.integration_us,
-                latest_frame.range_mm,processor.output.flow_quality,processor.output.range_quality,
+                latest_frame.range_mm,latest_frame.byte10,processor.output.flow_quality,processor.output.range_quality,
                 processor.output.flow_valid,processor.output.range_valid,processor.output.height_valid,processor.output.reason);
             uav_logf("INFO","FLOW_EST","height_mm=%ld sensor_v_mmps=%ld,%ld vz_mmps=%ld accepted=%lu/%lu range_reject=%lu",
                 (long)(processor.output.height_m*1000),(long)(processor.output.velocity_mps[0]*1000),

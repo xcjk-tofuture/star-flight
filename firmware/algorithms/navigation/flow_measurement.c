@@ -49,7 +49,9 @@ void uav_flow_processor_update(uav_flow_processor_t *p, const uav_flow_config_t 
     uav_flow_measurement_t *o=&p->output;
     p->last_frame_ms=f->received_ms;
     o->frames++; o->flow_valid=o->height_valid=o->range_valid=0; o->reason=UAV_FLOW_OK;
-    o->flow_quality=c->profile==UAV_FLOW_FPM ? (f->byte10==0xf5 ? 255:0):f->byte10;
+    /* UP-T2/T201 and FPM both encode a binary valid marker, not a quality
+     * gradient. Keep the legacy UI score normalized to 0/255; only F5 is valid. */
+    o->flow_quality=f->byte10==0xf5 ? 255:0;
     o->range_quality=c->profile==UAV_FLOW_FPM ? 0:f->byte11;
     o->range_m=f->range_mm*.001f;
     if ((uint32_t)(now-f->received_ms)>300u) { o->reason=UAV_FLOW_STALE; goto reject; }
@@ -76,7 +78,7 @@ void uav_flow_processor_update(uav_flow_processor_t *p, const uav_flow_config_t 
     }
     o->accepted_range++; o->height_valid=1; o->height_m=p->height; o->vertical_velocity_mps=p->vertical_speed;
     if (f->integration_us<1000u) { o->reason=UAV_FLOW_TIME; goto reject; }
-    if (o->flow_quality<c->minimum_flow_quality) { o->reason=UAV_FLOW_QUALITY; goto reject; }
+    if (f->byte10!=0xf5 || o->flow_quality<c->minimum_flow_quality) { o->reason=UAV_FLOW_QUALITY; goto reject; }
     if (!c->rotation_compensated && hypotf(a->rate_x,a->rate_y)>c->maximum_uncompensated_rotation_radps) {
         o->reason=UAV_FLOW_ROTATION; goto reject;
     }
