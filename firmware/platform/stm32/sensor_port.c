@@ -15,6 +15,7 @@ static uint8_t transaction_command, transaction_id, transaction_has_id;
 static uint16_t transaction_position;
 static uint8_t mag_pending, mag_st1, mag_st2;
 static uint32_t mag_trigger_ms;
+static uav_temperature_io_t temperature_io;
 /* Observe the driver's real read rather than inserting a second ID request.
  * BMI088 accel has one dummy byte; the other three checks do not. */
 static void observe_byte(uint8_t tx, uint8_t rx, int received) {
@@ -110,19 +111,32 @@ int uav_sensor_read_imu(float acc[3], float gyro[3]) {
 }
 int uav_sensor_read_temperature(float *temperature) {
     if (!temperature) return -1;
-    uint8_t id_tx[3]={0x80},id_rx[3],tx[4]={0xa2},rx[4];
+    uav_temperature_io_t observed=temperature_io;
+    observed.reads++; observed.valid=0; observed.id=observed.msb=observed.lsb=0; observed.raw_signed=0;
+    uint8_t id_tx[3]={0x80},id_rx[3]={0},tx[4]={0xa2},rx[4]={0};
     uav_sensor_select(0,1);
     HAL_StatusTypeDef status=HAL_SPI_TransmitReceive(&hspi2,id_tx,id_rx,sizeof(id_rx),2);
     uav_sensor_select(0,0);
-    if (status!=HAL_OK || id_rx[2]!=0x1e) return -1;
+    observed.id=id_rx[2];
+    if (status!=HAL_OK || id_rx[2]!=0x1e) goto complete;
     uav_sensor_select(0,1);
     status=HAL_SPI_TransmitReceive(&hspi2,tx,rx,sizeof(rx),2);
     uav_sensor_select(0,0);
-    if (status!=HAL_OK) return -1;
+    observed.msb=rx[2]; observed.lsb=rx[3];
+    if (status!=HAL_OK) goto complete;
     int raw=(rx[2]<<3)|(rx[3]>>5);
     if (raw>1023) raw-=2048;
+    observed.raw_signed=(int16_t)raw;
     *temperature=raw*.125f+23.0f;
-    return *temperature>=-40 && *temperature<=85 ? 0:-1;
+    observed.valid=(uint8_t)(*temperature>=-40 && *temperature<=85);
+complete:
+    observed.hal_status=(uint8_t)status;
+    if (!observed.valid) observed.errors++;
+    taskENTER_CRITICAL(); temperature_io=observed; taskEXIT_CRITICAL();
+    return observed.valid ? 0:-1;
+}
+void uav_sensor_temperature_io(uav_temperature_io_t *out) {
+    taskENTER_CRITICAL(); *out=temperature_io; taskEXIT_CRITICAL();
 }
 static int magnetic_transaction(uint8_t *tx, uint8_t *rx, uint16_t count) {
     uav_sensor_select(2,1);
@@ -186,6 +200,15 @@ void uav_device_heater_init(void) {
 }
 void uav_device_heater_write(uint16_t value) {
     __HAL_TIM_SET_COMPARE(&UAV_HEATER_TIMER, TIM_CHANNEL_1, value > 1000 ? 1000 : value);
+}
+void uav_device_heater_io(uav_heater_io_t *out) {
+    taskENTER_CRITICAL();
+    *out=(uav_heater_io_t){UAV_HEATER_TIMER.Instance->CR1,UAV_HEATER_TIMER.Instance->CCMR1,
+        UAV_HEATER_TIMER.Instance->CCER,(uint16_t)UAV_HEATER_TIMER.Instance->CCR1,
+        (uint16_t)UAV_HEATER_TIMER.Instance->ARR,(uint16_t)UAV_HEATER_TIMER.Instance->PSC,
+        (uint8_t)!!(GPIOB->IDR & GPIO_PIN_8),(uint8_t)((GPIOB->MODER>>16)&3u),
+        (uint8_t)(GPIOB->AFR[1]&15u)};
+    taskEXIT_CRITICAL();
 }
 void uav_device_delay_us(uint32_t us) {
     volatile uint32_t count = (HAL_RCC_GetHCLKFreq() / 4000000) * us;
