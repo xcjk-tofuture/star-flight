@@ -30,7 +30,7 @@ typedef struct {
     const uint16_t *values;
     uint32_t now_ms;
     float actual, setpoint, output;
-    uint8_t valid, fault, dirty, save_state, enabled;
+    uint8_t valid, fault, dirty, save_state, enabled, monitor_only;
 } gui_tuning_model_t;
 void gui_tuning_init(gui_tuning_t *panel);
 void gui_tuning_open(gui_tuning_t *panel, const gui_tuning_module_t *module);

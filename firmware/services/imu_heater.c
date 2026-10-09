@@ -29,7 +29,7 @@ void uav_imu_heater_pause(void) {
     if (!initialized) return;
     taskENTER_CRITICAL(); uav_device_heater_write(0); stats.duty_percent=0;
     stats.temperature_valid=0;
-    if (stats.state==UAV_HEATER_WARMING || stats.state==UAV_HEATER_READY) stats.state=UAV_HEATER_WAIT;
+    if (stats.state==UAV_HEATER_WARMING || stats.state==UAV_HEATER_READY || stats.state==UAV_HEATER_MONITOR) stats.state=UAV_HEATER_WAIT;
     reset_requested=1; taskEXIT_CRITICAL();
 }
 void uav_imu_heater_watchdog(uint32_t now) {
@@ -41,7 +41,7 @@ void uav_imu_heater_watchdog(uint32_t now) {
         uav_device_heater_write(0); stats.duty_percent=0;
         if (!stats.sample_ms || (uint32_t)(now-stats.sample_ms)>500u) stats.temperature_valid=0;
         if (!s.values.value[UAV_SETTING_HEATER_ENABLED]) stats.state=UAV_HEATER_OFF;
-        else if (stats.state==UAV_HEATER_WARMING || stats.state==UAV_HEATER_READY) {
+        else if (stats.state==UAV_HEATER_WARMING || stats.state==UAV_HEATER_READY || stats.state==UAV_HEATER_MONITOR) {
             stats.state=UAV_HEATER_FAULT; stats.fault=UAV_HEATER_SENSOR;
         }
     }
@@ -86,6 +86,9 @@ void uav_imu_heater_tick(uint32_t now) {
             /* A watchdog trip remains latched until the heater is disabled. */
             if (previous_fault) fault=previous_fault;
             if (fault) { next.state=UAV_HEATER_FAULT; integral=0; stable_active=rise_active=0; }
+            else if (!(s->value[UAV_SETTING_HEATER_KP] | s->value[UAV_SETTING_HEATER_KI] | s->value[UAV_SETTING_HEATER_KD])) {
+                integral=0; stable_active=rise_active=0; next.state=UAV_HEATER_MONITOR;
+            }
             else if (dt<=0 || dt>.5f) { integral=0; stable_active=rise_active=0; next.state=UAV_HEATER_WAIT; filtering=0; }
             else {
                 float error=next.target-next.temperature, limit=s->value[UAV_SETTING_HEATER_LIMIT];
@@ -123,6 +126,12 @@ void uav_imu_heater_tick(uint32_t now) {
         fault=stats.fault; next.fault=fault; next.state=UAV_HEATER_FAULT; next.duty_percent=0;
     }
     if (!snapshot.values.value[UAV_SETTING_HEATER_ENABLED]) { next.duty_percent=0; next.state=UAV_HEATER_OFF; }
+    if (!(snapshot.values.value[UAV_SETTING_HEATER_KP] | snapshot.values.value[UAV_SETTING_HEATER_KI] |
+          snapshot.values.value[UAV_SETTING_HEATER_KD])) {
+        integral=0; next.duty_percent=next.p=next.i=next.d=0;
+        if (next.state!=UAV_HEATER_OFF && next.state!=UAV_HEATER_FAULT && next.temperature_valid)
+            next.state=UAV_HEATER_MONITOR;
+    }
     if (uav_storage_busy() && next.state!=UAV_HEATER_OFF && next.state!=UAV_HEATER_FAULT) {
         next.duty_percent=0; next.state=UAV_HEATER_WAIT;
     }
@@ -134,5 +143,15 @@ void uav_imu_heater_tick(uint32_t now) {
             next.state,next.fault,next.temperature_valid,(long)(next.temperature*100),previous.value[UAV_SETTING_HEATER_TARGET],
             (unsigned)(next.duty_percent*10),(long)(next.p*100),(long)(next.i*100),(long)(next.d*100),
             (unsigned long)(have_sample ? now-sample_ms:UINT32_MAX));
+        uav_temperature_io_t temperature; uav_sensor_temperature_io(&temperature);
+        uav_logf(temperature.valid ? "INFO":"WARN","TEMP_IO",
+            "ID=0x%02x MSB=0x%02x LSB=0x%02x raw11=%d raw_milli_C=%ld valid=%u HAL=%u reads=%lu errors=%lu",
+            temperature.id,temperature.msb,temperature.lsb,temperature.raw_signed,
+            (long)(temperature.raw_signed*125+23000),temperature.valid,temperature.hal_status,
+            (unsigned long)temperature.reads,(unsigned long)temperature.errors);
+        uav_heater_io_t output; uav_device_heater_io(&output);
+        uav_logf("INFO","HEATER_IO","CCR=%u ARR=%u PSC=%u CR1=0x%lx CCMR1=0x%lx CCER=0x%lx PB8=%u mode=%u AF=%u",
+            output.ccr,output.arr,output.psc,(unsigned long)output.cr1,(unsigned long)output.ccmr1,
+            (unsigned long)output.ccer,output.pb8_high,output.gpio_mode,output.gpio_af);
     }
 }

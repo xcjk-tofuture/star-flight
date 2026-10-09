@@ -61,7 +61,8 @@ void gui_tuning_render(gui_tuning_t *p, gui_canvas_t *c, const gui_tuning_model_
     gui_text(c,61,4,page,GUI_FONT_TINY);
     const char *badge=m->save_state==1 ? "保存中":m->save_state==3 ? "保存失败"
         :p->editing ? "编辑":m->fault ? "控制异常"
-        :m->save_state==2 && !m->dirty ? "已保存":!m->enabled ? "已关闭":p->module->page_titles[p->page];
+        :m->monitor_only ? "只测温":m->save_state==2 && !m->dirty ? "已保存"
+        :!m->enabled ? "已关闭":p->module->page_titles[p->page];
     int width=gui_text_width(c,badge,GUI_FONT_CN12);
     gui_text(c,GUI_WIDTH-width-2,0,badge,GUI_FONT_CN12);
     if (m->dirty) gui_text(c,53,3,"*",GUI_FONT_TINY);

@@ -66,7 +66,7 @@ static gui_tuning_model_t tuning_model(const gui_model_t *m) {
     return (gui_tuning_model_t){.values=m->settings_value,.now_ms=m->now_ms,.actual=m->heater_temperature,
         .setpoint=m->settings_value[UAV_SETTING_HEATER_TARGET]*.1f,.output=m->heater_duty,.valid=m->heater_temperature_valid,
         .fault=m->heater_fault,.dirty=m->settings_dirty,.save_state=m->settings_save_state,
-        .enabled=(uint8_t)m->settings_value[UAV_SETTING_HEATER_ENABLED]};
+        .enabled=(uint8_t)m->settings_value[UAV_SETTING_HEATER_ENABLED],.monitor_only=m->heater_state==UAV_HEATER_MONITOR};
 }
 static void finish_edit(gui_dashboard_t *d) {
     if (d->edit_return_screen==GUI_SCREEN_PARAMETERS) open_parameters(d,d->edit_selection);
