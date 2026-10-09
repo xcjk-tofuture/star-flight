@@ -310,6 +310,12 @@ static void read_model(void) {
     model.flash_ok = (uint8_t)app_boot_flash_ready();
     model.flow_valid = !!flow.flowFlag; model.flow_quality = flow.flowConf;
     model.flow_height_mm = flow.zNowHeight;
+    model.range_valid=flow.range_valid; model.flow_height_valid=flow.height_valid;
+    model.range_quality=flow.range_quality; model.flow_reason=flow.reason;
+    model.flow_raw_fresh=flow.raw_fresh;
+    model.flow_raw_range_mm=flow.raw_range_mm; model.flow_frames=flow.frames;
+    model.flow_errors=flow.checksum_errors; model.flow_drops=flow.drops;
+    model.flow_range_m=flow.range_m; model.flow_agl_m=flow.height_m;
     model.flow_velocity[0] = flow.xFlowVel; model.flow_velocity[1] = flow.yFlowVel; model.flow_velocity[2] = flow.zFlowVel;
     model.heap_free = xPortGetFreeHeapSize(); model.heap_min = xPortGetMinimumEverFreeHeapSize();
     model.log_dropped = uav_log_dropped(); model.uart_errors = uart.start_errors + uart.timeouts + uart.dma_errors;

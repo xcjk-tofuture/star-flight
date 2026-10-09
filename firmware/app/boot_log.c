@@ -93,7 +93,7 @@ static void spi_parameters(const char *name, SPI_HandleTypeDef *spi, uint32_t cl
 void app_boot_log_peripherals(void) {
     uav_logf("INFO", "PERIPH", "GPIO DMA I2C SPI TIM UART USB initialization returned");
     uart_parameters("USART1", &huart1, "TX=PA9 RX=PA10 telemetry+LOG");
-    uart_parameters("USART2", &huart2, "TX=PA2 RX=PA3 flow");
+    uart_parameters("USART2", &huart2, "TX=PD5 RX=PD6 flow");
     uart_parameters("USART3", &huart3, "TX=PB10 RX=PB11 LOG moved to USART1");
     uart_parameters("UART4", &huart4, "TX=PA0 RX=PA1");
     uart_parameters("UART5", &huart5, "TX=PC12 RX=PD2");

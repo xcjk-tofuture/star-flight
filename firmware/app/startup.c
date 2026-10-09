@@ -33,7 +33,7 @@ void app_tasks_init(void) {
     app_boot_resource_init("PC_RX", PC_Init, "depth=4 max_rx=100B telemetry=50ms");
     app_boot_resource_init("SBUS_RX", sbus_transport_init, "chunks=4x100B parser=25B RX=100k8E1 legacy_profile timeout=100ms auto_rearm=1");
     app_boot_resource_init("LOG", uav_log_init, "boot=8192B runtime=1024B chunk=64B");
-    app_boot_resource_init("FLOW_RX", flow_transport_init, "depth=4 frame=14B timeout=100ms");
+    app_boot_resource_init("FLOW_RX", flow_transport_init, "chunks=4x64B parser=14B XOR+55 fresh=100ms UART2_RX=PD6");
     app_boot_resource_init("SPI1_MUTEX", uav_spi1_init, "recursive priority_inheritance=1");
     app_boot_resource_init("STORAGE", uav_storage_init, "write_depth=2");
     uav_settings_init();
@@ -69,11 +69,11 @@ void app_tasks_init(void) {
     if (!FlashTaskHandle)
         Error_Handler();
     app_boot_log_task("Flash", FlashTaskHandle, 768);
-    osThreadDef(Flow, Flow_Task_Proc, osPriorityIdle, 0, 128);
+    osThreadDef(Flow, Flow_Task_Proc, osPriorityIdle, 0, 256);
     FlowTaskHandle = osThreadCreate(osThread(Flow), NULL);
     if (!FlowTaskHandle)
         Error_Handler();
-    app_boot_log_task("Flow", FlowTaskHandle, 128);
+    app_boot_log_task("Flow", FlowTaskHandle, 256);
     osThreadDef(PC, PC_Task_Proc, osPriorityNormal, 0, 768);
     PCTaskHandle = osThreadCreate(osThread(PC), NULL);
     if (!PCTaskHandle)
