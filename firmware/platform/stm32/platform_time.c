@@ -2,6 +2,8 @@
 #include "main.h"
 uint32_t platform_millis(void) { return HAL_GetTick(); }
 uint32_t platform_micros(void) {
+    /* Called by tasks and UART IRQs. Protect the DWT wrap accumulator. */
+    uint32_t primask=__get_PRIMASK(); __disable_irq();
     static uint32_t previous_cycles, micros, remainder;
     static uint8_t initialized;
     uint32_t cycles_per_us=SystemCoreClock/1000000u;
@@ -19,5 +21,5 @@ uint32_t platform_micros(void) {
     remainder+=delta%cycles_per_us;
     micros+=remainder/cycles_per_us;
     remainder%=cycles_per_us;
-    return micros;
+    uint32_t result=micros; __set_PRIMASK(primask); return result;
 }

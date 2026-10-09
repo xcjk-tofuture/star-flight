@@ -10,6 +10,10 @@ static int valid(const uint8_t *b) {
 }
 void uav_flow_stream_feed(uav_flow_stream_t *s, const uint8_t *b, size_t n,
                           uint32_t ms, uav_flow_frame_fn callback, void *ctx) {
+    uav_flow_stream_feed_timed(s,b,n,ms,0,callback,ctx);
+}
+void uav_flow_stream_feed_timed(uav_flow_stream_t *s, const uint8_t *b, size_t n,
+                                uint32_t ms, uint32_t us, uav_flow_frame_fn callback, void *ctx) {
     if (!s || !b || !callback) return;
     if (s->used && (uint32_t)(ms-s->last_ms)>50u) { s->used=0; s->gaps++; }
     s->last_ms=ms;
@@ -18,8 +22,11 @@ void uav_flow_stream_feed(uav_flow_stream_t *s, const uint8_t *b, size_t n,
         s->bytes[s->used++]=b[i];
         if (s->used<14) continue;
         if (valid(s->bytes)) {
-            uav_flow_frame_t f={ms,signed_word(s->bytes+2),signed_word(s->bytes+4),
-                word(s->bytes+6),word(s->bytes+8),s->bytes[10],s->bytes[11]};
+            uint32_t trailing=(uint32_t)((n-i-1)*10000000u/115200u);
+            uav_flow_frame_t f={.received_ms=us ? ms-trailing/1000u:ms,
+                .integral_x=signed_word(s->bytes+2),.integral_y=signed_word(s->bytes+4),
+                .integration_us=word(s->bytes+6),.range_mm=word(s->bytes+8),
+                .byte10=s->bytes[10],.byte11=s->bytes[11],.received_us=us ? us-trailing:0};
             s->frames++; s->used=0; callback(ctx,&f);
         } else {
             s->rejected++;

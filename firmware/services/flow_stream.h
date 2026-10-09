@@ -7,6 +7,7 @@ typedef struct {
     int16_t integral_x, integral_y;
     uint16_t integration_us, range_mm;
     uint8_t byte10, byte11;
+    uint32_t received_us;
 } uav_flow_frame_t;
 typedef struct {
     uint8_t bytes[14], used;
@@ -16,4 +17,9 @@ typedef void (*uav_flow_frame_fn)(void *, const uav_flow_frame_t *);
 /* FE 0A + 10 payload bytes + payload XOR + 55. One owner; no HAL/heap. */
 void uav_flow_stream_feed(uav_flow_stream_t *stream, const uint8_t *bytes, size_t length,
                           uint32_t received_ms, uav_flow_frame_fn frame, void *context);
+/* Timestamp of the last byte in a contiguous UART block; trailing bytes are
+ * backed out using 115200 8N1 wire time. Old entry point has no gyro timing. */
+void uav_flow_stream_feed_timed(uav_flow_stream_t *stream, const uint8_t *bytes, size_t length,
+                               uint32_t received_ms, uint32_t received_us,
+                               uav_flow_frame_fn frame, void *context);
 #endif

@@ -2,6 +2,8 @@ set(FIRMWARE_SOURCES
   firmware/services/flow_stream.c
   firmware/platform/stm32/flow_rx_port.c
   firmware/algorithms/navigation/flow_measurement.c
+  firmware/algorithms/navigation/flow_gyro.c
+  firmware/os/flow_gyro_service.c
   firmware/algorithms/calibration/gyro_calibration.c
   firmware/algorithms/calibration/mag_calibration.c
   firmware/algorithms/calibration/accel_calibration.c

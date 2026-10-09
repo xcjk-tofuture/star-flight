@@ -4,6 +4,7 @@
 #include "flight_snapshot.h"
 #include "log_service.h"
 #include "platform_time.h"
+#include "flow_gyro_service.h"
 
 #include "lowPassFilter.h"
 #include "imu_calibration_config.h"
@@ -195,12 +196,14 @@ void Sensor_Data_Task_Proc(void const *argument) {
          * Only disarmed saves are allowed. Drop the interval across the save. */
         uint32_t storage_current=uav_storage_epoch();
         if (storage_current!=storage_seen) {
+            uav_flow_gyro_publish(0,NULL,0);
             storage_seen=storage_current; storage_paused=1;
             uav_imu_pipeline_discard(&imu_pipeline);
             if (AccelCalFlag) uav_accel_calibrator_discard_window(&accel_calibrator);
             mag_turn_seen=0;
         }
         if (uav_storage_busy()) {
+            uav_flow_gyro_publish(0,NULL,0);
             uav_imu_heater_pause();
             if (!storage_paused) uav_imu_pipeline_discard(&imu_pipeline);
             storage_paused=1; flight_attitude_invalidate(); continue;
@@ -235,6 +238,7 @@ void Sensor_Data_Task_Proc(void const *argument) {
         uint32_t previous_resets=imu_pipeline.stats.filter_resets;
         int sample_good=configured && read_status==0 && uav_imu_pipeline_push(&imu_pipeline,acc,gyro,sample_us)==0;
         if (!sample_good) {
+            uav_flow_gyro_publish(0,NULL,0);
             if (read_status) { imu_read_errors++; uav_imu_pipeline_discard(&imu_pipeline); }
             flight_attitude_invalidate();
             if (AccelCalFlag) uav_accel_calibrator_discard_window(&accel_calibrator);
@@ -244,6 +248,10 @@ void Sensor_Data_Task_Proc(void const *argument) {
                 cal_timing_resets++; warmup_start=now;
             }
         } else {
+            float flow_gyro[3];
+            for (unsigned i=0;i<3;i++) flow_gyro[i]=gyro[i]-imu_pipeline.gyro_bias[i];
+            uav_flow_gyro_publish(sample_us,flow_gyro,
+                (uint8_t)(!storage_paused && !GyroCalFlag && !startup_gyro.failed && !MagCalFlag && !AccelCalFlag));
             test_acc=(acc_raw_data_t){acc[0],acc[1],acc[2]};
             test_gyro=(gyro_raw_data_t){gyro[0],gyro[1],gyro[2]};
             copy_imu_sample();
