@@ -11,6 +11,7 @@ STM32F407 / FreeRTOS 无人机固件。
 - [遥控接收与未校准状态排查](docs/RC_LINK.md)
 - [遥控通道、UI与蜂鸣器操作](docs/RC_CONTROLS.md)
 - [系统设置、遥控调参与IMU恒温](docs/SETTINGS.md)
+- [光流/激光链路、旧算法审查与PX4参考](docs/FLOW_PIPELINE.md)
 - [启动参数与 USART1 日志](docs/UART_LOG.md)
 - [IMU采集、滤波、姿态与校准](docs/IMU_PIPELINE.md)
 - [手动校准与数据存储现状](docs/CALIBRATION.md)
