@@ -149,6 +149,11 @@ void uav_imu_heater_tick(uint32_t now) {
             temperature.id,temperature.msb,temperature.lsb,temperature.raw_signed,
             (long)(temperature.raw_signed*125+23000),temperature.valid,temperature.hal_status,
             (unsigned long)temperature.reads,(unsigned long)temperature.errors);
+        if (temperature.check_read) uav_logf(temperature.check_valid ? "INFO":"WARN","TEMP_CHECK",
+            "burst_raw11=%d single_raw11=%d single_MSB=0x%02x single_LSB=0x%02x delta_raw=%d valid=%u HAL=%u at_read=%lu",
+            temperature.check_burst_raw_signed,temperature.check_raw_signed,temperature.check_msb,temperature.check_lsb,
+            temperature.check_burst_raw_signed-temperature.check_raw_signed,temperature.check_valid,temperature.check_hal,
+            (unsigned long)temperature.check_read);
         uav_heater_io_t output; uav_device_heater_io(&output);
         uav_logf("INFO","HEATER_IO","CCR=%u ARR=%u PSC=%u CR1=0x%lx CCMR1=0x%lx CCER=0x%lx PB8=%u mode=%u AF=%u",
             output.ccr,output.arr,output.psc,(unsigned long)output.cr1,(unsigned long)output.ccmr1,

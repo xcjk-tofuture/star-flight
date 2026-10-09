@@ -14,6 +14,9 @@ typedef struct {
     uint32_t reads, errors;
     int16_t raw_signed;
     uint8_t id, msb, lsb, hal_status, valid;
+    uint32_t check_read;
+    int16_t check_raw_signed, check_burst_raw_signed;
+    uint8_t check_msb, check_lsb, check_hal, check_valid;
 } uav_temperature_io_t;
 /* Cached bytes from the normal temperature transaction; adds no SPI traffic. */
 void uav_sensor_temperature_io(uav_temperature_io_t *out);

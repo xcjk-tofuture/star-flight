@@ -109,6 +109,16 @@ int uav_sensor_read_imu(float acc[3], float gyro[3]) {
     if (status!=HAL_OK) return -1;
     return uav_imu_decode_bmi088(acc_rx,gyro_rx,acc,gyro);
 }
+static HAL_StatusTypeDef temperature_register_read(uint8_t address, uint8_t *value) {
+    /* Same ACC read protocol as the legacy driver: command, dummy, data.
+     * Bounded HAL transactions avoid the legacy fatal-error byte wrapper. */
+    uint8_t tx[3]={(uint8_t)(address|0x80u),0xff,0xff},rx[3]={0};
+    uav_sensor_select(0,1);
+    HAL_StatusTypeDef status=HAL_SPI_TransmitReceive(&hspi2,tx,rx,sizeof(rx),2);
+    uav_sensor_select(0,0);
+    if (status==HAL_OK) *value=rx[2];
+    return status;
+}
 int uav_sensor_read_temperature(float *temperature) {
     if (!temperature) return -1;
     uav_temperature_io_t observed=temperature_io;
@@ -129,6 +139,20 @@ int uav_sensor_read_temperature(float *temperature) {
     observed.raw_signed=(int16_t)raw;
     *temperature=raw*.125f+23.0f;
     observed.valid=(uint8_t)(*temperature>=-40 && *temperature<=85);
+    if (observed.valid && observed.reads%10u==0) {
+        /* Compare once per second, not on the 500Hz inertial sampling path.
+         * Re-read MSB to reject a pair torn by the device's temperature update. */
+        uint8_t msb=0,lsb=0,msb_again=0;
+        HAL_StatusTypeDef check=temperature_register_read(0x22,&msb);
+        if (check==HAL_OK) check=temperature_register_read(0x23,&lsb);
+        if (check==HAL_OK) check=temperature_register_read(0x22,&msb_again);
+        observed.check_read=observed.reads; observed.check_msb=msb; observed.check_lsb=lsb;
+        observed.check_burst_raw_signed=observed.raw_signed;
+        observed.check_hal=(uint8_t)check;
+        observed.check_valid=(uint8_t)(check==HAL_OK && msb==msb_again);
+        int alternate=(msb<<3)|(lsb>>5); if (alternate>1023) alternate-=2048;
+        observed.check_raw_signed=(int16_t)alternate;
+    }
 complete:
     observed.hal_status=(uint8_t)status;
     if (!observed.valid) observed.errors++;
