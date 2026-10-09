@@ -12,6 +12,8 @@ typedef struct {
     uint8_t range_valid, height_valid, range_quality, reason, raw_fresh;
     uint32_t received_ms, flow_ms, range_ms, frames, checksum_errors, drops;
     float range_m, height_m, velocity_variance;
+    float raw_rate[2], rotation_rate[2], compensated_rate[2], gyro_delta[3];
+    uint8_t comp_status, gyro_ready, gyro_reason, comparison_valid;
 } _flow_data;
 /* Init before task creation; ISR copies bounded chunks, never waits.
  * Queue-full drops a sample; only Flow task writes state. Snapshot is task-only. */

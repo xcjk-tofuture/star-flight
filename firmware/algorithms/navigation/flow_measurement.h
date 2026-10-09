@@ -1,11 +1,21 @@
 #ifndef UAV_FLOW_MEASUREMENT_H
 #define UAV_FLOW_MEASUREMENT_H
 #include "flow_stream.h"
+#include "flow_gyro.h"
 enum { UAV_FLOW_UPIX=1, UAV_FLOW_FPM=2 };
 enum { UAV_FLOW_OK=0, UAV_FLOW_STALE, UAV_FLOW_TIME, UAV_FLOW_QUALITY, UAV_FLOW_RANGE,
        UAV_FLOW_ATTITUDE, UAV_FLOW_TILT, UAV_FLOW_ROTATION, UAV_FLOW_OUTLIER };
+enum { UAV_FLOW_COMP_OFF, UAV_FLOW_COMP_TIME, UAV_FLOW_COMP_MOUNT,
+       UAV_FLOW_COMP_DELAY, UAV_FLOW_COMP_READY, UAV_FLOW_COMP_GYRO, UAV_FLOW_COMP_CONFIG };
 typedef struct {
-    uint8_t profile, minimum_flow_quality, minimum_range_quality, rotation_compensated;
+    uint8_t enabled, mounting_confirmed, delay_confirmed;
+    uint32_t delay_us;
+    /* Maps calibrated IMU body delta angles to raw UPixels image integrals.
+     * Includes camera mounting and sign/axis conventions. Not a velocity map. */
+    float image_from_body[2][3], scale[2];
+} uav_flow_comp_config_t;
+typedef struct {
+    uint8_t profile, minimum_flow_quality, minimum_range_quality;
     float range_min_m, range_max_m, minimum_cos_tilt, max_flow_rate_radps;
     float maximum_uncompensated_rotation_radps, velocity_tau_s;
     uint32_t timeout_ms;
@@ -15,6 +25,8 @@ typedef struct {
     float range_m, height_m, vertical_velocity_mps, velocity_mps[2], velocity_variance;
     uint32_t flow_ms, range_ms, frames, accepted_flow, accepted_range, range_rejected, flow_rejected;
     uint8_t range_valid, height_valid, flow_valid, flow_quality, range_quality, reason;
+    float raw_rate[2], rotation_rate[2], compensated_rate[2], gyro_delta[3];
+    uint8_t comp_status, gyro_ready, gyro_reason, comparison_valid;
 } uav_flow_measurement_t;
 typedef struct {
     uav_flow_measurement_t output;
@@ -27,6 +39,7 @@ typedef struct {
 void uav_flow_processor_init(uav_flow_processor_t *processor);
 void uav_flow_processor_update(uav_flow_processor_t *processor, const uav_flow_config_t *config,
                                const uav_flow_frame_t *frame, const uav_flow_attitude_t *attitude,
+                               const uav_flow_comp_config_t *comp_config, const uav_flow_gyro_interval_t *gyro,
                                uint32_t now_ms);
 void uav_flow_processor_expire(uav_flow_processor_t *processor, const uav_flow_config_t *config, uint32_t now_ms);
 #endif

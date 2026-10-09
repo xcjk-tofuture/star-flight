@@ -37,6 +37,10 @@ void uav_flow_processor_expire(uav_flow_processor_t *p, const uav_flow_config_t 
     if ((uint32_t)(now-p->output.flow_ms)>c->timeout_ms) {
         p->output.flow_valid=0; p->velocity_initialized=0;
         p->output.velocity_mps[0]=p->output.velocity_mps[1]=0;
+        if ((uint32_t)(now-p->last_frame_ms)>c->timeout_ms) {
+            p->output.gyro_ready=p->output.comparison_valid=0;
+            p->output.comp_status=UAV_FLOW_COMP_TIME;
+        }
         if ((uint32_t)(now-p->last_frame_ms)>c->timeout_ms) p->output.reason=UAV_FLOW_STALE;
     }
     if ((uint32_t)(now-p->output.range_ms)>300u) {
@@ -44,8 +48,44 @@ void uav_flow_processor_expire(uav_flow_processor_t *p, const uav_flow_config_t 
         p->output.vertical_velocity_mps=0;
     }
 }
+static void compensate(uav_flow_measurement_t *o, const uav_flow_frame_t *f,
+                       const uav_flow_comp_config_t *c, const uav_flow_gyro_interval_t *g) {
+    o->gyro_ready=o->comparison_valid=0; o->comp_status=UAV_FLOW_COMP_OFF;
+    memset(o->raw_rate,0,sizeof(o->raw_rate)); memset(o->rotation_rate,0,sizeof(o->rotation_rate));
+    memset(o->compensated_rate,0,sizeof(o->compensated_rate)); memset(o->gyro_delta,0,sizeof(o->gyro_delta));
+    o->gyro_reason=g ? g->reason:UAV_FLOW_GYRO_EMPTY;
+    if (f->integration_us<1000u || !f->received_us) { o->comp_status=UAV_FLOW_COMP_TIME; return; }
+    float dt=f->integration_us*1e-6f;
+    o->raw_rate[0]=f->integral_x*.0001f/dt; o->raw_rate[1]=f->integral_y*.0001f/dt;
+    if (!c || !c->enabled) return;
+    if (c->delay_us>100000u) { o->comp_status=UAV_FLOW_COMP_CONFIG; return; }
+    for (unsigned i=0;i<2;i++) {
+        if (!isfinite(c->scale[i]) || c->scale[i]<.5f || c->scale[i]>2) { o->comp_status=UAV_FLOW_COMP_CONFIG; return; }
+        float norm=0;
+        for (unsigned j=0;j<3;j++) {
+            if (!isfinite(c->image_from_body[i][j])) { o->comp_status=UAV_FLOW_COMP_CONFIG; return; }
+            norm+=c->image_from_body[i][j]*c->image_from_body[i][j];
+        }
+        if (fabsf(norm-1)>.01f) { o->comp_status=UAV_FLOW_COMP_CONFIG; return; }
+    }
+    float dot=0; for (unsigned j=0;j<3;j++) dot+=c->image_from_body[0][j]*c->image_from_body[1][j];
+    if (fabsf(dot)>.01f) { o->comp_status=UAV_FLOW_COMP_CONFIG; return; }
+    if (!g || !g->valid || g->span_us!=f->integration_us) { o->comp_status=UAV_FLOW_COMP_GYRO; return; }
+    for (unsigned j=0;j<3;j++) if (!isfinite(g->delta[j])) { o->comp_status=UAV_FLOW_COMP_GYRO; return; }
+    o->gyro_ready=1; memcpy(o->gyro_delta,g->delta,sizeof(o->gyro_delta));
+    for (unsigned i=0;i<2;i++) {
+        float rotation=0;
+        for (unsigned j=0;j<3;j++) rotation+=c->image_from_body[i][j]*g->delta[j];
+        o->raw_rate[i]*=c->scale[i]; o->rotation_rate[i]=rotation/dt;
+        o->compensated_rate[i]=o->raw_rate[i]-o->rotation_rate[i];
+    }
+    o->comparison_valid=(uint8_t)(f->byte10==0xf5);
+    o->comp_status=!c->mounting_confirmed ? UAV_FLOW_COMP_MOUNT:
+        !c->delay_confirmed ? UAV_FLOW_COMP_DELAY:UAV_FLOW_COMP_READY;
+}
 void uav_flow_processor_update(uav_flow_processor_t *p, const uav_flow_config_t *c,
-                               const uav_flow_frame_t *f, const uav_flow_attitude_t *a, uint32_t now) {
+                               const uav_flow_frame_t *f, const uav_flow_attitude_t *a,
+                               const uav_flow_comp_config_t *cc, const uav_flow_gyro_interval_t *g, uint32_t now) {
     uav_flow_measurement_t *o=&p->output;
     p->last_frame_ms=f->received_ms;
     o->frames++; o->flow_valid=o->height_valid=o->range_valid=0; o->reason=UAV_FLOW_OK;
@@ -54,6 +94,7 @@ void uav_flow_processor_update(uav_flow_processor_t *p, const uav_flow_config_t 
     o->flow_quality=f->byte10==0xf5 ? 255:0;
     o->range_quality=c->profile==UAV_FLOW_FPM ? 0:f->byte11;
     o->range_m=f->range_mm*.001f;
+    compensate(o,f,cc,g);
     if ((uint32_t)(now-f->received_ms)>300u) { o->reason=UAV_FLOW_STALE; goto reject; }
     float dt=f->integration_us>=1000u ? f->integration_us*.000001f:.02f;
     int ray_good=c->profile==UAV_FLOW_UPIX && o->range_quality>=c->minimum_range_quality &&
@@ -61,6 +102,7 @@ void uav_flow_processor_update(uav_flow_processor_t *p, const uav_flow_config_t 
     if (ray_good) { o->range_valid=1; o->range_ms=f->received_ms; }
     if ((uint32_t)(now-f->received_ms)>c->timeout_ms) { o->reason=UAV_FLOW_STALE; goto reject; }
     uint32_t midpoint=f->received_ms-f->integration_us/2000u;
+    if (cc && cc->enabled && cc->delay_us<=100000u) midpoint-=cc->delay_us/1000u;
     int32_t alignment=(int32_t)(a->sample_ms-midpoint);
     int pose_good=a->valid && (uint32_t)(now-a->sample_ms)<=100u &&
         alignment>=-50 && alignment<=50 && isfinite(a->roll) && isfinite(a->pitch) && isfinite(a->rate_x) && isfinite(a->rate_y);
@@ -79,11 +121,19 @@ void uav_flow_processor_update(uav_flow_processor_t *p, const uav_flow_config_t 
     o->accepted_range++; o->height_valid=1; o->height_m=p->height; o->vertical_velocity_mps=p->vertical_speed;
     if (f->integration_us<1000u) { o->reason=UAV_FLOW_TIME; goto reject; }
     if (f->byte10!=0xf5 || o->flow_quality<c->minimum_flow_quality) { o->reason=UAV_FLOW_QUALITY; goto reject; }
-    if (!c->rotation_compensated && hypotf(a->rate_x,a->rate_y)>c->maximum_uncompensated_rotation_radps) {
+    int compensated=o->comp_status==UAV_FLOW_COMP_READY;
+    if (cc && cc->enabled && cc->mounting_confirmed && cc->delay_confirmed && !compensated) {
+        o->reason=UAV_FLOW_ROTATION; goto reject;
+    }
+    if (!compensated && hypotf(a->rate_x,a->rate_y)>c->maximum_uncompensated_rotation_radps) {
         o->reason=UAV_FLOW_ROTATION; goto reject;
     }
     float rate[2]={f->integral_x*.0001f/dt,f->integral_y*.0001f/dt};
     if (hypotf(rate[0],rate[1])>c->max_flow_rate_radps) { o->reason=UAV_FLOW_OUTLIER; goto reject; }
+    if (compensated) {
+        rate[0]=o->compensated_rate[0]; rate[1]=o->compensated_rate[1];
+        if (hypotf(rate[0],rate[1])>c->max_flow_rate_radps) { o->reason=UAV_FLOW_OUTLIER; goto reject; }
+    }
     float velocity[2]={rate[0]*o->range_m,rate[1]*o->range_m};
     float alpha=dt/(c->velocity_tau_s+dt);
     if (!p->velocity_initialized || (uint32_t)(f->received_ms-o->flow_ms)>c->timeout_ms) {
