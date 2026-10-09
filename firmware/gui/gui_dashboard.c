@@ -1,5 +1,6 @@
 #include "gui_dashboard.h"
 #include "gui_scene.h"
+#include "gui_cards.h"
 #include "accel_calibration.h"
 #include "app_settings.h"
 #include "imu_heater.h"
@@ -136,10 +137,10 @@ static void footer(gui_canvas_t *c, const gui_dashboard_t *d, const gui_model_t 
 }
 unsigned gui_dashboard_view_count(uint8_t page) {
     if (page == GUI_PAGE_TRENDS) return GUI_CHART_COUNT;
-    if (page == GUI_PAGE_SENSORS || page == GUI_PAGE_HEALTH) return 3;
+    if (page == GUI_PAGE_SENSORS || page == GUI_PAGE_HEALTH || page==GUI_PAGE_FLOW) return 3;
     if (page == GUI_PAGE_REMOTE) return 4;
     if (page == GUI_PAGE_MAG_CAL || page == GUI_PAGE_ACCEL_CAL) return 2;
-    if (page == GUI_PAGE_ATTITUDE || page == GUI_PAGE_FLOW ||
+    if (page == GUI_PAGE_ATTITUDE ||
         page == GUI_PAGE_REMOTE_CAL) return 2;
     return 1;
 }
@@ -369,6 +370,8 @@ void gui_dashboard_update(gui_dashboard_t *d, const gui_model_t *m) {
     gui_history_push(&d->history[4], v, m->baro_ok && m->pressure_pa > 0 ? 1 : 0, 10);
     v[0] = m->flow_velocity[0]; v[1] = m->flow_velocity[1];
     gui_history_push(&d->history[5], v, m->flow_valid ? 3 : 0, .1f);
+    v[0]=m->flow_range_m*1000; v[1]=m->flow_agl_m*1000; v[2]=0;
+    gui_history_push(&d->range_history,v,(uint8_t)((m->range_valid ? 1:0)|(m->flow_height_valid ? 2:0)),.1f);
 }
 static void overview(gui_canvas_t *c, const gui_model_t *m) {
     gui_text(c, 2, 16, "ROLL deg", GUI_FONT_TINY);
@@ -484,7 +487,7 @@ static void flow(gui_canvas_t *c, const gui_dashboard_t *d, const gui_model_t *m
             gui_circle(c, 26, 34, 18);
             gui_dashed_line(c, 8, 34, 44, 34, 3);
             gui_dashed_line(c, 26, 16, 26, 52, 3);
-        } else gui_text(c, 7, 28, "无数据", GUI_FONT_CN12);
+        } else gui_text(c, 2, 28, m->flow_frames ? "未就绪":"无数据", GUI_FONT_CN12);
         if (m->flow_valid && isfinite(m->flow_velocity[0]) && isfinite(m->flow_velocity[1])) {
             float vx = m->flow_velocity[0], vy = m->flow_velocity[1];
             float length = sqrtf(vx*vx+vy*vy);
@@ -497,18 +500,26 @@ static void flow(gui_canvas_t *c, const gui_dashboard_t *d, const gui_model_t *m
                 gui_line(c, 26+dx, 34+dy, 26+dx-(int)(5*cosf(angle+.6f)), 34+dy-(int)(5*sinf(angle+.6f)));
             }
         }
-        gui_text(c, 49, 16, "HEIGHT mm", GUI_FONT_TINY);
-        number(c, 49, 22, m->flow_height_mm, 0, 0, m->flow_valid, GUI_FONT_LARGE);
-        gui_text(c, 49, 40, "QUALITY", GUI_FONT_TINY);
-        gui_bar(c, 49, 48, 76, 6, m->flow_valid ? m->flow_quality : 0, 0, 255);
-    } else {
-        gui_text(c, 2, 16, "XY VELOCITY mm/s", GUI_FONT_TINY);
+        gui_text(c, 49, 16, m->flow_height_valid ? "AGL mm":"RANGE mm", GUI_FONT_TINY);
+        number(c, 49, 22, m->flow_height_mm, 0, 0, m->range_valid, GUI_FONT_LARGE);
+        gui_text(c, 49, 40, "Q FLOW/RNG", GUI_FONT_TINY);
+        number(c,49,47,m->flow_quality,0,0,m->flow_raw_fresh,GUI_FONT_TINY);
+        number(c,88,47,m->range_quality,0,0,m->flow_raw_fresh,GUI_FONT_TINY);
+        if (!m->flow_valid) { gui_text(c,2,50,"WHY",GUI_FONT_TINY); number(c,21,50,m->flow_reason,0,0,1,GUI_FONT_TINY); }
+    } else if (d->view==1) {
+        gui_text(c, 2, 16, "SENSOR XY mm/s", GUI_FONT_TINY);
         int low, high; gui_history_range(&d->history[5], 2, 40, &low, &high);
         gui_plot(c, &d->history[5], 2, 24, 124, 22, 2, low, high);
         gui_text(c, 2, 49, "X", GUI_FONT_TINY);
         number(c, 9, 49, m->flow_velocity[0], 1, 1, m->flow_valid, GUI_FONT_TINY);
         gui_text(c, 67, 49, "Y", GUI_FONT_TINY);
         number(c, 74, 49, m->flow_velocity[1], 1, 1, m->flow_valid, GUI_FONT_TINY);
+    } else {
+        gui_text(c,2,16,"RANGE- AGL: mm",GUI_FONT_TINY);
+        int low,high; gui_history_range(&d->range_history,2,40,&low,&high);
+        gui_plot(c,&d->range_history,2,24,124,22,2,low,high);
+        gui_text(c,2,49,"RAW",GUI_FONT_TINY); number(c,20,49,m->flow_raw_range_mm,0,0,m->flow_raw_fresh,GUI_FONT_TINY);
+        gui_text(c,70,49,"Vz",GUI_FONT_TINY); number(c,83,49,m->flow_velocity[2],0,1,m->flow_height_valid,GUI_FONT_TINY);
     }
 }
 static void health_row(gui_canvas_t *c, int y, const char *label, int okay, const char *detail) {
@@ -643,6 +654,11 @@ static void accel_cal(gui_canvas_t *c, const gui_model_t *m, unsigned view) {
 }
 void gui_dashboard_render(gui_dashboard_t *d, gui_canvas_t *c, const gui_model_t *m) {
     gui_clear(c);
+    if (d->screen==GUI_SCREEN_PARAMETERS) {
+        static const uint8_t icons[]={GUI_ICON_HEATER,GUI_ICON_INNER,GUI_ICON_OUTER,GUI_ICON_SPEED,GUI_ICON_HEIGHT,GUI_ICON_BACK};
+        gui_cards_render(&d->menu,c,icons,"参数控制",d->menu.selected>0 && d->menu.selected<5 ? "未开放":"选模块");
+        remote_footer(c,d,m); return;
+    }
     if (d->screen==GUI_SCREEN_TUNING) {
         gui_tuning_model_t tune=tuning_model(m); gui_tuning_render(&d->tuning,c,&tune);
         if (m->rc_ui_active) {

@@ -1,6 +1,19 @@
 #include "gui_plot.h"
 #include <limits.h>
 #include <math.h>
+#include <stdlib.h>
+static void trace_segment(gui_canvas_t *c, int x0, int y0, int x1, int y1, unsigned channel) {
+    if (!channel) { gui_line(c,x0,y0,x1,y1); return; }
+    int dx=abs(x1-x0),dy=abs(y1-y0),steps=dx>dy ? dx:dy;
+    unsigned period=channel==1 ? 4:6, on=channel==1 ? 2:1;
+    for (int i=0;i<=steps;i++) {
+        int x=steps ? x0+(x1-x0)*i/steps:x0;
+        int y=steps ? y0+(y1-y0)*i/steps:y0;
+        /* Anchor the pattern to display X. Restarting it on every short
+         * sample segment made dense secondary traces look solid. */
+        if ((unsigned)x%period<on) gui_line(c,x,y,x,y);
+    }
+}
 void gui_history_push(gui_history_t *h, const float values[3], uint8_t valid, float scale) {
     uint8_t mask = 0;
     for (unsigned i = 0; i < GUI_HISTORY_CHANNELS; i++) {
@@ -46,7 +59,7 @@ void gui_plot(gui_canvas_t *c, const gui_history_t *h, int x, int y, int w, int 
             if (value > high) value = high;
             int px = x + 1 + (int)(n * (unsigned)(w - 3) / (GUI_HISTORY_SAMPLES - 1u));
             int py = y + height - 2 - (int)((int32_t)(value - low) * (height - 3) / (high - low));
-            if (valid && last_valid) gui_dashed_line(c, last_x, last_y, px, py, ch ? ch * 2 : 0);
+            if (valid && last_valid) trace_segment(c,last_x,last_y,px,py,ch);
             last_x = px; last_y = py; last_valid = valid;
         }
     }

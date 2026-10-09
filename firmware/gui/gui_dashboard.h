@@ -41,6 +41,10 @@ typedef struct {
     uint8_t heater_state, heater_fault, heater_temperature_valid;
     uint8_t imu_calibrating, imu_cal_failed, fusion_mag_used, mag_calibrating, mag_calibration_step;
     uint8_t imu_ok, mag_ok, baro_ok, flash_ok, flow_valid, flow_quality;
+    uint8_t range_valid, flow_height_valid, range_quality, flow_reason, flow_raw_fresh;
+    uint16_t flow_raw_range_mm;
+    uint32_t flow_frames, flow_errors, flow_drops;
+    float flow_range_m, flow_agl_m;
     uint16_t mag_cal_samples, mag_cal_rms_permille;
     uint8_t mag_cal_coverage, mag_cal_reason;
     uint8_t mag_cal_hint, mag_cal_quality_ready, mag_sphere_ready, mag_sphere_fitted, mag_cursor_valid, mag_sphere_covered;
@@ -54,6 +58,7 @@ typedef struct {
 } gui_model_t;
 typedef struct {
     gui_history_t history[GUI_CHART_COUNT];
+    gui_history_t range_history;
     uint32_t last_sample_ms;
     uint8_t page, view, has_sample;
     gui_menu_t menu;

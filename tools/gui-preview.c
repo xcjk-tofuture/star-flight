@@ -33,6 +33,8 @@ static void sample(unsigned tick) {
     model.temperature_c = 34.8f+.3f*sinf(t*.2f); model.pressure_pa = 101325+15*cosf(t);
     model.heater_temperature=36.0f+3.8f*(1-expf(-t/15))+.12f*sinf(t*.5f);
     model.flow_velocity[0] = 280*sinf(t*.7f); model.flow_velocity[1] = 120*cosf(t*.6f);
+    model.flow_range_m=1.25f+.06f*sinf(t*.35f); model.flow_agl_m=model.flow_range_m*.98f;
+    model.flow_height_mm=(int16_t)(model.flow_agl_m*1000); model.flow_raw_range_mm=(uint16_t)(model.flow_range_m*1000);
 }
 int main(int argc, char **argv) {
     if (argc != 2) { fprintf(stderr, "Usage: gui-preview OUTPUT_DIRECTORY\n"); return 1; }
@@ -43,7 +45,10 @@ int main(int argc, char **argv) {
     model.heater_temperature_valid=1; model.heater_temperature=39.8f; model.heater_target=40;
     model.heater_duty=24; model.heater_p=2; model.heater_i=22; model.heater_state=UAV_HEATER_READY;
     model.attitude_valid = model.imu_ok = model.mag_ok = model.baro_ok = model.rc_connected = model.rc_raw_connected = 1;
+    model.rc_parameters_valid=model.rc_receiver_present=1;
     model.flow_valid = model.flash_ok = 1; model.flow_quality = 210; model.flow_height_mm = 1250;
+    model.range_valid=model.flow_height_valid=model.flow_raw_fresh=1; model.range_quality=95;
+    model.flow_frames=100; model.flow_raw_range_mm=1250;
     model.fusion_mag_used = 1;
     model.heap_free = 2672; model.heap_min = 2440; model.render_ms = 3; model.display_stats.last_bytes = 280;
     for (unsigned i = 0; i < 8; i++) {
@@ -86,7 +91,7 @@ int main(int argc, char **argv) {
         {"trend-gyro",3,1},{"trend-mag",3,2},{"trend-temp",3,3},{"trend-baro",3,4},{"trend-flow",3,5},
         {"sensors",4,0},{"offsets",4,1},{"environment",4,2},{"remote",5,0},{"remote-5-8",5,1},
         {"remote-raw",5,2},{"remote-raw-5-8",5,3},
-        {"flow",6,0},{"flow-chart",6,1},{"health",7,0},{"memory",7,1},{"display-stats",7,2},
+        {"flow",6,0},{"flow-chart",6,1},{"range-chart",6,2},{"health",7,0},{"memory",7,1},{"display-stats",7,2},
         {"remote-cal",19,0},{"mag-cal",20,0},{"heater-monitor",22,0}
     };
     for (unsigned i = 0; i < sizeof(scenes)/sizeof(scenes[0]); i++) {
@@ -105,6 +110,11 @@ int main(int argc, char **argv) {
     gui_dashboard_input(&dashboard,GUI_INPUT_BACK,&model); gui_dashboard_input(&dashboard,GUI_INPUT_BACK,&model);
     gui_menu_select(&dashboard.menu,9); gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
     gui_dashboard_render(&dashboard,&canvas,&model); if (save_frame(argv[1],"menu-parameters")) return 1;
+    const char *card_names[]={"cards-heater","cards-inner","cards-outer","cards-speed","cards-height","cards-back"};
+    for (unsigned i=0;i<6;i++) {
+        gui_menu_select(&dashboard.menu,(uint8_t)i); gui_dashboard_render(&dashboard,&canvas,&model);
+        if (save_frame(argv[1],card_names[i])) return 1;
+    }
     gui_menu_select(&dashboard.menu,0); gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
     gui_dashboard_render(&dashboard,&canvas,&model); if (save_frame(argv[1],"heater-tuning")) return 1;
     gui_dashboard_input(&dashboard,GUI_INPUT_ENTER,&model);
