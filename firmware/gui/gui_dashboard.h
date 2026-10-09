@@ -45,6 +45,8 @@ typedef struct {
     uint16_t flow_raw_range_mm;
     uint32_t flow_frames, flow_errors, flow_drops;
     float flow_range_m, flow_agl_m;
+    float flow_raw_rate[2], flow_rotation_rate[2], flow_compensated_rate[2];
+    uint8_t flow_comp_status, flow_comparison_valid;
     uint16_t mag_cal_samples, mag_cal_rms_permille;
     uint8_t mag_cal_coverage, mag_cal_reason;
     uint8_t mag_cal_hint, mag_cal_quality_ready, mag_sphere_ready, mag_sphere_fitted, mag_cursor_valid, mag_sphere_covered;
@@ -59,6 +61,7 @@ typedef struct {
 typedef struct {
     gui_history_t history[GUI_CHART_COUNT];
     gui_history_t range_history;
+    gui_history_t flow_comp_history[2];
     uint32_t last_sample_ms;
     uint8_t page, view, has_sample;
     gui_menu_t menu;

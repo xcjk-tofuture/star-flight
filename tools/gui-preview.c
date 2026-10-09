@@ -35,6 +35,11 @@ static void sample(unsigned tick) {
     model.flow_velocity[0] = 280*sinf(t*.7f); model.flow_velocity[1] = 120*cosf(t*.6f);
     model.flow_range_m=1.25f+.06f*sinf(t*.35f); model.flow_agl_m=model.flow_range_m*.98f;
     model.flow_height_mm=(int16_t)(model.flow_agl_m*1000); model.flow_raw_range_mm=(uint16_t)(model.flow_range_m*1000);
+    for (unsigned i=0;i<2;i++) {
+        model.flow_rotation_rate[i]=.32f*sinf(t*.9f+i);
+        model.flow_compensated_rate[i]=.045f*cosf(t*.6f+i);
+        model.flow_raw_rate[i]=model.flow_rotation_rate[i]+model.flow_compensated_rate[i];
+    }
 }
 int main(int argc, char **argv) {
     if (argc != 2) { fprintf(stderr, "Usage: gui-preview OUTPUT_DIRECTORY\n"); return 1; }
@@ -46,7 +51,8 @@ int main(int argc, char **argv) {
     model.heater_duty=24; model.heater_p=2; model.heater_i=22; model.heater_state=UAV_HEATER_READY;
     model.attitude_valid = model.imu_ok = model.mag_ok = model.baro_ok = model.rc_connected = model.rc_raw_connected = 1;
     model.rc_parameters_valid=model.rc_receiver_present=1;
-    model.flow_valid = model.flash_ok = 1; model.flow_quality = 210; model.flow_height_mm = 1250;
+    model.flow_valid = model.flash_ok = 1; model.flow_quality = 255; model.flow_height_mm = 1250;
+    model.flow_comparison_valid=1; model.flow_comp_status=2; /* Candidate mounting, not READY. */
     model.range_valid=model.flow_height_valid=model.flow_raw_fresh=1; model.range_quality=95;
     model.flow_frames=100; model.flow_raw_range_mm=1250;
     model.fusion_mag_used = 1;
@@ -91,7 +97,8 @@ int main(int argc, char **argv) {
         {"trend-gyro",3,1},{"trend-mag",3,2},{"trend-temp",3,3},{"trend-baro",3,4},{"trend-flow",3,5},
         {"sensors",4,0},{"offsets",4,1},{"environment",4,2},{"remote",5,0},{"remote-5-8",5,1},
         {"remote-raw",5,2},{"remote-raw-5-8",5,3},
-        {"flow",6,0},{"flow-chart",6,1},{"range-chart",6,2},{"health",7,0},{"memory",7,1},{"display-stats",7,2},
+        {"flow",6,0},{"flow-chart",6,1},{"range-chart",6,2},{"flow-comp-x",6,3},{"flow-comp-y",6,4},
+        {"health",7,0},{"memory",7,1},{"display-stats",7,2},
         {"remote-cal",19,0},{"mag-cal",20,0},{"heater-monitor",22,0}
     };
     for (unsigned i = 0; i < sizeof(scenes)/sizeof(scenes[0]); i++) {

@@ -137,7 +137,8 @@ static void footer(gui_canvas_t *c, const gui_dashboard_t *d, const gui_model_t 
 }
 unsigned gui_dashboard_view_count(uint8_t page) {
     if (page == GUI_PAGE_TRENDS) return GUI_CHART_COUNT;
-    if (page == GUI_PAGE_SENSORS || page == GUI_PAGE_HEALTH || page==GUI_PAGE_FLOW) return 3;
+    if (page==GUI_PAGE_FLOW) return 5;
+    if (page == GUI_PAGE_SENSORS || page == GUI_PAGE_HEALTH) return 3;
     if (page == GUI_PAGE_REMOTE) return 4;
     if (page == GUI_PAGE_MAG_CAL || page == GUI_PAGE_ACCEL_CAL) return 2;
     if (page == GUI_PAGE_ATTITUDE ||
@@ -357,6 +358,8 @@ void gui_dashboard_update(gui_dashboard_t *d, const gui_model_t *m) {
     if (d->has_sample && elapsed > 500u) {
         const float empty[3] = {0};
         for (unsigned i = 0; i < GUI_CHART_COUNT; i++) gui_history_push(&d->history[i], empty, 0, 1);
+        gui_history_push(&d->range_history,empty,0,1);
+        for (unsigned i=0;i<2;i++) gui_history_push(&d->flow_comp_history[i],empty,0,1);
     }
     d->last_sample_ms = m->now_ms; d->has_sample = 1;
     float v[3] = {m->attitude[0]*DEG_PER_RAD, m->attitude[1]*DEG_PER_RAD, 0};
@@ -372,6 +375,12 @@ void gui_dashboard_update(gui_dashboard_t *d, const gui_model_t *m) {
     gui_history_push(&d->history[5], v, m->flow_valid ? 3 : 0, .1f);
     v[0]=m->flow_range_m*1000; v[1]=m->flow_agl_m*1000; v[2]=0;
     gui_history_push(&d->range_history,v,(uint8_t)((m->range_valid ? 1:0)|(m->flow_height_valid ? 2:0)),.1f);
+    for (unsigned i=0;i<2;i++) {
+        v[0]=m->flow_raw_rate[i]*1000; v[1]=m->flow_rotation_rate[i]*1000; v[2]=m->flow_compensated_rate[i]*1000;
+        uint8_t valid=m->flow_raw_fresh && m->flow_quality ? 1:0;
+        if (m->flow_comparison_valid) valid=7;
+        gui_history_push(&d->flow_comp_history[i],v,valid,.1f);
+    }
 }
 static void overview(gui_canvas_t *c, const gui_model_t *m) {
     gui_text(c, 2, 16, "ROLL deg", GUI_FONT_TINY);
@@ -514,12 +523,20 @@ static void flow(gui_canvas_t *c, const gui_dashboard_t *d, const gui_model_t *m
         number(c, 9, 49, m->flow_velocity[0], 1, 1, m->flow_valid, GUI_FONT_TINY);
         gui_text(c, 67, 49, "Y", GUI_FONT_TINY);
         number(c, 74, 49, m->flow_velocity[1], 1, 1, m->flow_valid, GUI_FONT_TINY);
-    } else {
+    } else if (d->view==2) {
         gui_text(c,2,16,"RANGE- AGL: mm",GUI_FONT_TINY);
         int low,high; gui_history_range(&d->range_history,2,40,&low,&high);
         gui_plot(c,&d->range_history,2,24,124,22,2,low,high);
         gui_text(c,2,49,"RAW",GUI_FONT_TINY); number(c,20,49,m->flow_raw_range_mm,0,0,m->flow_raw_fresh,GUI_FONT_TINY);
         gui_text(c,70,49,"Vz",GUI_FONT_TINY); number(c,83,49,m->flow_velocity[2],0,1,m->flow_height_valid,GUI_FONT_TINY);
+    } else {
+        unsigned axis=d->view==3 ? 0:1;
+        static const char *status[]={"OFF","TIME","MOUNT?","DELAY?","READY","GYRO GAP","CONFIG"};
+        gui_text(c,2,16,axis ? "Y RAW-/GYR:/CMP.":"X RAW-/GYR:/CMP.",GUI_FONT_TINY);
+        int low,high; gui_history_range(&d->flow_comp_history[axis],3,20,&low,&high);
+        gui_plot(c,&d->flow_comp_history[axis],2,24,124,22,3,low,high);
+        gui_text(c,2,49,"mrad/s",GUI_FONT_TINY);
+        gui_text(c,48,49,status[m->flow_comp_status<7 ? m->flow_comp_status:6],GUI_FONT_TINY);
     }
 }
 static void health_row(gui_canvas_t *c, int y, const char *label, int okay, const char *detail) {

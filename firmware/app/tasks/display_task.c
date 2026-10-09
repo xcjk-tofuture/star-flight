@@ -316,6 +316,11 @@ static void read_model(void) {
     model.flow_raw_range_mm=flow.raw_range_mm; model.flow_frames=flow.frames;
     model.flow_errors=flow.checksum_errors; model.flow_drops=flow.drops;
     model.flow_range_m=flow.range_m; model.flow_agl_m=flow.height_m;
+    memcpy(model.flow_raw_rate,flow.raw_rate,sizeof(model.flow_raw_rate));
+    memcpy(model.flow_rotation_rate,flow.rotation_rate,sizeof(model.flow_rotation_rate));
+    memcpy(model.flow_compensated_rate,flow.compensated_rate,sizeof(model.flow_compensated_rate));
+    model.flow_comp_status=flow.comp_status;
+    model.flow_comparison_valid=(uint8_t)(flow.raw_fresh && flow.comparison_valid);
     model.flow_velocity[0] = flow.xFlowVel; model.flow_velocity[1] = flow.yFlowVel; model.flow_velocity[2] = flow.zFlowVel;
     model.heap_free = xPortGetFreeHeapSize(); model.heap_min = xPortGetMinimumEverFreeHeapSize();
     model.log_dropped = uav_log_dropped(); model.uart_errors = uart.start_errors + uart.timeouts + uart.dma_errors;
